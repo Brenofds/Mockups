@@ -2,12 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="description" content="Interactive 3D print proof" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🖨️</text></svg>" />
   <title>Print Mockup 3D Viewer</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
   <style>
     :root {
@@ -49,8 +51,14 @@
       font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
       background: #0d0e12;
       color: var(--text-primary);
+      -webkit-user-select: none;
       user-select: none;
       -webkit-font-smoothing: antialiased;
+    }
+
+    input, textarea {
+      -webkit-user-select: text;
+      user-select: text;
     }
 
     /* Studio Background Gradient */
@@ -58,6 +66,7 @@
       position: relative;
       width: 100vw;
       height: 100vh;
+      height: 100dvh;
       overflow: hidden;
       background: radial-gradient(circle at 58% 42%, #252834 0%, #13151c 58%, #090a0f 100%);
       transition: background 0.45s ease;
@@ -85,6 +94,44 @@
 
     canvas:active {
       cursor: grabbing;
+    }
+
+    /* Fatal Error Screen */
+    #fatal-error-screen {
+      position: absolute;
+      inset: 0;
+      z-index: 200;
+      background: radial-gradient(circle at 50% 45%, #1e202b 0%, #0d0e12 100%);
+      color: var(--text-primary);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      text-align: center;
+    }
+
+    #fatal-error-screen.visible {
+      display: flex;
+    }
+
+    .fatal-error-box {
+      max-width: 420px;
+      background: rgba(18, 19, 24, 0.94);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-lg);
+      padding: 28px 24px;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .fatal-error-box p {
+      font-size: 14px;
+      line-height: 1.5;
+      color: var(--text-primary);
+      font-weight: 500;
     }
 
     /* Left Side Control Panel */
@@ -978,6 +1025,7 @@
         bottom: 0;
         width: 100%;
         height: 54vh;
+        height: 54dvh;
         border-radius: 20px 20px 0 0;
         border-bottom: none;
         transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
@@ -1021,12 +1069,31 @@
         gap: 8px;
       }
     }
+
+    @media (prefers-reduced-motion: reduce) {
+      :root {
+        --transition: 0.01ms linear;
+      }
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
   </style>
 </head>
 <body>
   <div id="app-container">
     <!-- 3D WebGL Canvas Container -->
     <div id="canvas-wrapper"></div>
+
+    <!-- Fullscreen Friendly Error Fallback -->
+    <div id="fatal-error-screen" role="alert" aria-live="assertive">
+      <div class="fatal-error-box">
+        <p id="fatal-error-text"></p>
+      </div>
+    </div>
 
     <!-- 3D Floating Labels Overlay -->
     <div id="labels-layer">
@@ -1353,6 +1420,75 @@
       'use strict';
 
       /* ==========================================================================
+         0. REDUCED MOTION, FATAL ERROR DISPLAY & CDN FALLBACK LOADER
+         ========================================================================== */
+      const reducedMotionQuery = window.matchMedia
+        ? window.matchMedia('(prefers-reduced-motion: reduce)')
+        : null;
+      let prefersReducedMotion = Boolean(reducedMotionQuery && reducedMotionQuery.matches);
+      if (reducedMotionQuery) {
+        const onMotionPrefChange = function (e) {
+          prefersReducedMotion = Boolean(e.matches);
+        };
+        if (reducedMotionQuery.addEventListener) {
+          reducedMotionQuery.addEventListener('change', onMotionPrefChange);
+        } else if (reducedMotionQuery.addListener) {
+          reducedMotionQuery.addListener(onMotionPrefChange);
+        }
+      }
+
+      function showFatalError(message) {
+        const screen = document.getElementById('fatal-error-screen');
+        const textEl = document.getElementById('fatal-error-text');
+        if (textEl) textEl.textContent = message;
+        if (screen) screen.classList.add('visible');
+      }
+
+      function showToast(msg) {
+        const el = document.getElementById('toast-msg');
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.add('show');
+        clearTimeout(showToast._timer);
+        showToast._timer = setTimeout(() => {
+          el.classList.remove('show');
+        }, 3200);
+      }
+
+      function loadScriptFallback(src) {
+        return new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = src;
+          s.async = true;
+          s.setAttribute('data-runtime-fallback', 'true');
+          s.onload = () => resolve();
+          s.onerror = () => reject(new Error('Failed to load ' + src));
+          document.head.appendChild(s);
+        });
+      }
+
+      async function ensureThreeLoaded() {
+        if (window.THREE && window.THREE.OrbitControls) {
+          return true;
+        }
+        try {
+          if (!window.THREE) {
+            await loadScriptFallback('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js');
+          }
+          if (window.THREE && !window.THREE.OrbitControls) {
+            try {
+              await loadScriptFallback('https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/controls/OrbitControls.js');
+            } catch (err) {
+              await loadScriptFallback('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js');
+            }
+          }
+        } catch (err) {
+          // Handled by return check below
+        }
+        return Boolean(window.THREE && window.THREE.OrbitControls);
+      }
+
+      /* ==========================================================================
          1. APPLICATION STATE & PRODUCT DEFINITIONS (Units = Inches)
          ========================================================================== */
       const FINISH_PRESETS = {
@@ -1396,8 +1532,8 @@
             thickness: 0.015,
             cornerRadius: 0.06,
             finish: 'glossUV',
-            front: { dataUrl: null, width: 0, height: 0, texture: null },
-            back: { dataUrl: null, width: 0, height: 0, texture: null }
+            front: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 },
+            back: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 }
           },
           doorHanger: {
             name: 'Door Hanger',
@@ -1407,8 +1543,8 @@
             cornerRadius: 0.14,
             showDieCut: true,
             finish: 'glossUV',
-            front: { dataUrl: null, width: 0, height: 0, texture: null },
-            back: { dataUrl: null, width: 0, height: 0, texture: null }
+            front: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 },
+            back: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 }
           },
           card3x4: {
             name: '3×4 Card',
@@ -1416,8 +1552,8 @@
             thickness: 0.016,
             cornerRadius: 0.08,
             finish: 'glossUV',
-            front: { dataUrl: null, width: 0, height: 0, texture: null },
-            back: { dataUrl: null, width: 0, height: 0, texture: null }
+            front: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 },
+            back: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 }
           },
           bifold: {
             name: 'Bi-Fold Brochure',
@@ -1427,8 +1563,8 @@
             cornerRadius: 0.03,
             foldPercent: 45, // 0 = flat open, 45 = presentation angled, 100 = closed
             finish: 'glossUV',
-            front: { dataUrl: null, width: 0, height: 0, texture: null }, // Outside spread
-            back: { dataUrl: null, width: 0, height: 0, texture: null }   // Inside spread
+            front: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 }, // Outside spread
+            back: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 }   // Inside spread
           },
           trifold: {
             name: 'Tri-Fold Brochure',
@@ -1439,8 +1575,8 @@
             foldPercent: 45, // 0 = flat open, 45 = presentation angled, 100 = closed
             foldStyle: 'roll', // 'roll' (C-Fold) | 'zfold' (Accordion Z-Fold)
             finish: 'glossUV',
-            front: { dataUrl: null, width: 0, height: 0, texture: null }, // Outside spread
-            back: { dataUrl: null, width: 0, height: 0, texture: null }   // Inside spread
+            front: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 }, // Outside spread
+            back: { dataUrl: null, width: 0, height: 0, texture: null, loadToken: 0 }   // Inside spread
           }
         }
       };
@@ -1513,2074 +1649,2388 @@
         }
       }
 
-      /* ==========================================================================
-         2. THREE.JS SCENE, RENDERER, STUDIO LIGHTS & PROCEDURAL PMREM ENVIRONMENT
-         ========================================================================== */
-      const canvasWrapper = document.getElementById('canvas-wrapper');
-      const scene = new THREE.Scene();
-
-      const camera = new THREE.PerspectiveCamera(
-        34,
-        window.innerWidth / window.innerHeight,
-        0.1,
-        100
-      );
-      camera.position.set(0, 0.35, 6.8);
-
-      const renderer = new THREE.WebGLRenderer({
-        antialias: true,
-        alpha: true,
-        powerPreference: 'high-performance'
-      });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-      renderer.setSize(window.innerWidth, window.innerHeight);
-      renderer.outputEncoding = THREE.sRGBEncoding;
-      renderer.toneMapping = THREE.ACESFilmicToneMapping;
-      renderer.toneMappingExposure = 1.06;
-      renderer.physicallyCorrectLights = true;
-      canvasWrapper.appendChild(renderer.domElement);
-
-      const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
-
-      // OrbitControls
-      const controls = new THREE.OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
-      controls.dampingFactor = 0.065;
-      controls.rotateSpeed = 0.75;
-      controls.zoomSpeed = 0.9;
-      controls.panSpeed = 0.6;
-      controls.minDistance = 2.0;
-      controls.maxDistance = 32.0;
-      // Prevent camera from going below the reflective studio floor
-      controls.maxPolarAngle = Math.PI * 0.5 - 0.025;
-      controls.minPolarAngle = 0.1;
-
-      // Studio Soft Lighting (Key, Fill, Rim, Ambient)
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
-      scene.add(ambientLight);
-
-      const keyLight = new THREE.DirectionalLight(0xfffcf5, 2.2);
-      keyLight.position.set(4.5, 6.5, 5.5);
-      scene.add(keyLight);
-
-      const fillLight = new THREE.DirectionalLight(0xdce6ff, 1.15);
-      fillLight.position.set(-5.5, 2.5, 4.0);
-      scene.add(fillLight);
-
-      const rimLight = new THREE.DirectionalLight(0xffffff, 1.4);
-      rimLight.position.set(0.5, 5.0, -6.0);
-      scene.add(rimLight);
-
-      // Generate Procedural Studio Softbox Environment Map with PMREMGenerator
-      function createStudioEnvironmentMap() {
-        const pmremGenerator = new THREE.PMREMGenerator(renderer);
-        pmremGenerator.compileCubemapShader();
-
-        const envScene = new THREE.Scene();
-        envScene.background = new THREE.Color(0x14161d);
-
-        const softboxGeo = new THREE.PlaneGeometry(1, 1);
-
-        // Main overhead softbox strip
-        const topBox = new THREE.Mesh(
-          softboxGeo,
-          new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
-        );
-        topBox.scale.set(14, 4, 1);
-        topBox.position.set(0, 8, 2);
-        topBox.rotation.x = Math.PI / 2;
-        envScene.add(topBox);
-
-        // Key angled softbox (warm white)
-        const keyBox = new THREE.Mesh(
-          softboxGeo,
-          new THREE.MeshBasicMaterial({ color: 0xfff8eb, side: THREE.DoubleSide })
-        );
-        keyBox.scale.set(7, 9, 1);
-        keyBox.position.set(6.5, 3.0, 6.5);
-        keyBox.lookAt(0, 0, 0);
-        envScene.add(keyBox);
-
-        // Left fill softbox (cool studio blue-white)
-        const fillBox = new THREE.Mesh(
-          softboxGeo,
-          new THREE.MeshBasicMaterial({ color: 0xdbeafe, side: THREE.DoubleSide })
-        );
-        fillBox.scale.set(6, 8, 1);
-        fillBox.position.set(-7.5, 2.0, 4.5);
-        fillBox.lookAt(0, 0, 0);
-        envScene.add(fillBox);
-
-        // Back rim highlight strip
-        const rimBox = new THREE.Mesh(
-          softboxGeo,
-          new THREE.MeshBasicMaterial({ color: 0xe0e7ff, side: THREE.DoubleSide })
-        );
-        rimBox.scale.set(12, 3, 1);
-        rimBox.position.set(0, 4.5, -8.0);
-        rimBox.lookAt(0, 0, 0);
-        envScene.add(rimBox);
-
-        const envMapRT = pmremGenerator.fromScene(envScene, 0.04);
-        pmremGenerator.dispose();
-        softboxGeo.dispose();
-
-        return envMapRT.texture;
+      function detectCanvasAlpha(ctx, width, height, dataUrlHint) {
+        if (
+          typeof dataUrlHint === 'string' &&
+          (dataUrlHint.indexOf('data:image/jpeg') === 0 || dataUrlHint.indexOf('data:image/jpg') === 0)
+        ) {
+          return false;
+        }
+        try {
+          const imgData = ctx.getImageData(0, 0, width, height).data;
+          const total = imgData.length;
+          const step = Math.max(4, Math.floor(total / (4 * 16000)) * 4);
+          for (let i = 3; i < total; i += step) {
+            if (imgData[i] < 254) return true;
+          }
+          // Check corners explicitly
+          const corners = [
+            3,
+            (width - 1) * 4 + 3,
+            (height - 1) * width * 4 + 3,
+            (height * width - 1) * 4 + 3
+          ];
+          for (let c = 0; c < corners.length; c++) {
+            const idx = corners[c];
+            if (idx >= 0 && idx < total && imgData[idx] < 254) return true;
+          }
+        } catch (e) {
+          return false;
+        }
+        return false;
       }
 
-      const studioEnvMap = createStudioEnvironmentMap();
-      scene.environment = studioEnvMap;
+      function encodeOpaqueCanvasWithFallback(sourceCanvas, quality) {
+        const w = sourceCanvas.width;
+        const h = sourceCanvas.height;
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = w;
+        outCanvas.height = h;
+        const outCtx = outCanvas.getContext('2d');
+        outCtx.fillStyle = '#ffffff';
+        outCtx.fillRect(0, 0, w, h);
+        outCtx.drawImage(sourceCanvas, 0, 0, w, h);
 
-      /* ==========================================================================
-         3. PIECE RIG, GLOSSY FLOOR REFLECTION & SOFT CONTACT SHADOW
-         ========================================================================== */
-      const rootStage = new THREE.Group();
-      scene.add(rootStage);
-
-      // Pivot group controlled by Front/Back/Flip/Cover animations and Auto-rotate
-      const piecePivot = new THREE.Group();
-      rootStage.add(piecePivot);
-
-      // Idle float container inside piecePivot
-      const floatGroup = new THREE.Group();
-      piecePivot.add(floatGroup);
-
-      // Mirror Reflection Rig (sits below floorY and mirrors piecePivot + floatGroup)
-      let currentFloorY = -1.45;
-      const reflectionRoot = new THREE.Group();
-      scene.add(reflectionRoot);
-
-      const reflectionPivot = new THREE.Group();
-      reflectionRoot.add(reflectionPivot);
-
-      // Generate Soft Contact Shadow + Floor Fade Texture
-      function createContactShadowTexture() {
-        const c = document.createElement('canvas');
-        c.width = 256;
-        c.height = 256;
-        const ctx = c.getContext('2d');
-        const grad = ctx.createRadialGradient(128, 128, 10, 128, 128, 120);
-        grad.addColorStop(0, 'rgba(0, 0, 0, 0.58)');
-        grad.addColorStop(0.45, 'rgba(0, 0, 0, 0.24)');
-        grad.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, 256, 256);
-        const tex = new THREE.CanvasTexture(c);
-        return tex;
+        const webpData = outCanvas.toDataURL('image/webp', quality);
+        if (webpData.indexOf('data:image/webp') === 0) {
+          return webpData;
+        }
+        return outCanvas.toDataURL('image/jpeg', quality);
       }
 
-      const contactShadowMat = new THREE.MeshBasicMaterial({
-        map: createContactShadowTexture(),
-        transparent: true,
-        depthWrite: false,
-        opacity: 0.78
-      });
-      const contactShadowMesh = new THREE.Mesh(
-        new THREE.PlaneGeometry(1, 1),
-        contactShadowMat
-      );
-      contactShadowMesh.rotation.x = -Math.PI / 2;
-      scene.add(contactShadowMesh);
-
-      // Glossy Floor Gradient Fade Overlay Plane (sits at currentFloorY over mirrored mesh)
-      function createFloorFadeTexture(isLight) {
-        const c = document.createElement('canvas');
-        c.width = 512;
-        c.height = 512;
-        const ctx = c.getContext('2d');
-        const grad = ctx.createRadialGradient(256, 256, 15, 256, 256, 250);
-        if (isLight) {
-          grad.addColorStop(0, 'rgba(226, 232, 240, 0.72)');
-          grad.addColorStop(0.65, 'rgba(215, 222, 234, 0.90)');
-          grad.addColorStop(1, 'rgba(210, 216, 228, 0.0)');
-        } else {
-          grad.addColorStop(0, 'rgba(16, 18, 25, 0.72)');
-          grad.addColorStop(0.65, 'rgba(13, 15, 21, 0.92)');
-          grad.addColorStop(1, 'rgba(10, 12, 17, 0.0)');
-        }
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, 512, 512);
-        const tex = new THREE.CanvasTexture(c);
-        tex.encoding = THREE.sRGBEncoding;
-        return tex;
-      }
-
-      const floorFadeMat = new THREE.MeshBasicMaterial({
-        map: createFloorFadeTexture(false),
-        transparent: true,
-        depthWrite: false
-      });
-      const floorFadePlane = new THREE.Mesh(
-        new THREE.PlaneGeometry(24, 24),
-        floorFadeMat
-      );
-      floorFadePlane.rotation.x = -Math.PI / 2;
-      scene.add(floorFadePlane);
-
       /* ==========================================================================
-         4. MATERIALS & PLACEHOLDER TEXTURE GENERATOR
+         2. MAIN VIEWER INITIALIZATION
          ========================================================================== */
-      const frontMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0xffffff,
-        envMap: studioEnvMap,
-        side: THREE.FrontSide
-      });
+      function startViewerApplication() {
+        const canvasWrapper = document.getElementById('canvas-wrapper');
 
-      const backMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0xffffff,
-        envMap: studioEnvMap,
-        side: THREE.FrontSide
-      });
-
-      // Crisp white paper cardstock edge material
-      const edgeMaterial = new THREE.MeshPhysicalMaterial({
-        color: 0xfbfbfa,
-        roughness: 0.78,
-        metalness: 0.0,
-        clearcoat: 0.0,
-        envMap: studioEnvMap,
-        envMapIntensity: 0.35,
-        side: THREE.FrontSide
-      });
-
-      // Mirrored floor reflection materials (attenuated opacity + DoubleSide for inverted Y scale)
-      const reflFrontMat = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0.24,
-        side: THREE.DoubleSide,
-        depthWrite: false
-      });
-      const reflBackMat = new THREE.MeshBasicMaterial({
-        color: 0xffffff,
-        transparent: true,
-        opacity: 0.24,
-        side: THREE.DoubleSide,
-        depthWrite: false
-      });
-      const reflEdgeMat = new THREE.MeshBasicMaterial({
-        color: 0xe5e7eb,
-        transparent: true,
-        opacity: 0.18,
-        side: THREE.DoubleSide,
-        depthWrite: false
-      });
-
-      let mainPieceMesh = null;
-      let reflectionPieceMesh = null;
-      let placeholderFrontTex = null;
-      let placeholderBackTex = null;
-      let activeFoldCleanupGeometries = [];
-      let mainFoldRig = null;
-      let reflFoldRig = null;
-
-      function createPlaceholderTexture(sideLabel, productKey) {
-        const dims = getProductDimensions(productKey);
-        const aspect = dims.width / dims.height;
-
-        const baseRes = 1400;
-        const canvas = document.createElement('canvas');
-        if (aspect >= 1) {
-          canvas.width = baseRes;
-          canvas.height = Math.round(baseRes / aspect);
-        } else {
-          canvas.width = Math.round(baseRes * aspect);
-          canvas.height = baseRes;
-        }
-
-        const w = canvas.width;
-        const h = canvas.height;
-        const ctx = canvas.getContext('2d');
-
-        // Elegant warm light gray paper stock background
-        const bgGrad = ctx.createLinearGradient(0, 0, w, h);
-        bgGrad.addColorStop(0, '#f3f4f6');
-        bgGrad.addColorStop(1, '#e5e7eb');
-        ctx.fillStyle = bgGrad;
-        ctx.fillRect(0, 0, w, h);
-
-        // Subtle technical grid
-        ctx.strokeStyle = 'rgba(17, 24, 39, 0.045)';
-        ctx.lineWidth = 2;
-        const step = Math.round(Math.min(w, h) / 10);
-        for (let x = step; x < w; x += step) {
-          ctx.beginPath();
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, h);
-          ctx.stroke();
-        }
-        for (let y = step; y < h; y += step) {
-          ctx.beginPath();
-          ctx.moveTo(0, y);
-          ctx.lineTo(w, y);
-          ctx.stroke();
-        }
-
-        // Safe margin dashed border
-        const pad = Math.round(Math.min(w, h) * 0.055);
-        ctx.strokeStyle = 'rgba(107, 114, 128, 0.36)';
-        ctx.lineWidth = Math.max(2, Math.round(Math.min(w, h) * 0.0035));
-        ctx.setLineDash([12, 10]);
-        ctx.strokeRect(pad, pad, w - pad * 2, h - pad * 2);
-        ctx.setLineDash([]);
-
-        // Special fold guide lines & panel headers for Bi-Fold and Tri-Fold
-        if (productKey === 'bifold') {
-          const midX = w * 0.5;
-          ctx.strokeStyle = 'rgba(99, 102, 241, 0.65)';
-          ctx.lineWidth = 3;
-          ctx.setLineDash([14, 10]);
-          ctx.beginPath();
-          ctx.moveTo(midX, 0);
-          ctx.lineTo(midX, h);
-          ctx.stroke();
-          ctx.setLineDash([]);
-
-          // Panel labels
-          const isOutside = sideLabel.toUpperCase() === 'FRONT';
-          const leftTitle = isOutside ? 'BACK COVER' : 'INSIDE LEFT';
-          const rightTitle = isOutside ? 'FRONT COVER' : 'INSIDE RIGHT';
-          const spreadLabel = isOutside ? 'OUTSIDE SPREAD (FRONT)' : 'INSIDE SPREAD (BACK)';
-
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          const pTitleSize = Math.round(Math.min(w / 2, h) * 0.11);
-          ctx.font = `700 ${pTitleSize}px Inter, -apple-system, sans-serif`;
-          ctx.fillStyle = '#374151';
-          ctx.fillText(leftTitle, w * 0.25, h * 0.43);
-          ctx.fillText(rightTitle, w * 0.75, h * 0.43);
-
-          const pSubSize = Math.round(Math.min(w / 2, h) * 0.052);
-          ctx.font = `600 ${pSubSize}px Inter, -apple-system, sans-serif`;
-          ctx.fillStyle = '#6366f1';
-          ctx.fillText(
-            `Panel: ${(dims.width / 2).toFixed(2)}" × ${dims.height.toFixed(2)}"`,
-            w * 0.25,
-            h * 0.52
-          );
-          ctx.fillText(
-            `Panel: ${(dims.width / 2).toFixed(2)}" × ${dims.height.toFixed(2)}"`,
-            w * 0.75,
-            h * 0.52
-          );
-
-          ctx.fillStyle = '#6b7280';
-          ctx.font = `600 ${Math.round(pSubSize * 0.92)}px Inter, -apple-system, sans-serif`;
-          ctx.fillText(
-            `${spreadLabel} • Open: ${dims.width.toFixed(2)}" × ${dims.height.toFixed(2)}"`,
-            w * 0.5,
-            h * 0.86
-          );
-        } else if (productKey === 'trifold') {
-          const x1 = w / 3;
-          const x2 = (w * 2) / 3;
-          ctx.strokeStyle = 'rgba(99, 102, 241, 0.65)';
-          ctx.lineWidth = 3;
-          ctx.setLineDash([14, 10]);
-          [x1, x2].forEach((xPos) => {
-            ctx.beginPath();
-            ctx.moveTo(xPos, 0);
-            ctx.lineTo(xPos, h);
-            ctx.stroke();
+        let renderer;
+        try {
+          renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            alpha: true,
+            powerPreference: 'high-performance'
           });
+          if (!renderer || !renderer.getContext()) {
+            throw new Error('WebGL context unavailable');
+          }
+        } catch (err) {
+          showFatalError('Your device or browser does not support 3D rendering. Try another browser.');
+          return;
+        }
+
+        const scene = new THREE.Scene();
+
+        const camera = new THREE.PerspectiveCamera(
+          34,
+          window.innerWidth / window.innerHeight,
+          0.1,
+          100
+        );
+        camera.position.set(0, 0.35, 6.8);
+
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.outputEncoding = THREE.sRGBEncoding;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.06;
+        renderer.physicallyCorrectLights = true;
+        canvasWrapper.appendChild(renderer.domElement);
+
+        const maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
+
+        // OrbitControls
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.065;
+        controls.rotateSpeed = 0.75;
+        controls.zoomSpeed = 0.9;
+        controls.panSpeed = 0.6;
+        controls.minDistance = 2.0;
+        controls.maxDistance = 32.0;
+        // Prevent camera from going below the reflective studio floor
+        controls.maxPolarAngle = Math.PI * 0.5 - 0.025;
+        controls.minPolarAngle = 0.1;
+
+        // Studio Soft Lighting (Key, Fill, Rim, Ambient)
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.85);
+        scene.add(ambientLight);
+
+        const keyLight = new THREE.DirectionalLight(0xfffcf5, 2.2);
+        keyLight.position.set(4.5, 6.5, 5.5);
+        scene.add(keyLight);
+
+        const fillLight = new THREE.DirectionalLight(0xdce6ff, 1.15);
+        fillLight.position.set(-5.5, 2.5, 4.0);
+        scene.add(fillLight);
+
+        const rimLight = new THREE.DirectionalLight(0xffffff, 1.4);
+        rimLight.position.set(0.5, 5.0, -6.0);
+        scene.add(rimLight);
+
+        // Generate Procedural Studio Softbox Environment Map with PMREMGenerator
+        function createStudioEnvironmentMap() {
+          const pmremGenerator = new THREE.PMREMGenerator(renderer);
+          pmremGenerator.compileCubemapShader();
+
+          const envScene = new THREE.Scene();
+          envScene.background = new THREE.Color(0x14161d);
+
+          const softboxGeo = new THREE.PlaneGeometry(1, 1);
+
+          // Main overhead softbox strip
+          const topBox = new THREE.Mesh(
+            softboxGeo,
+            new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide })
+          );
+          topBox.scale.set(14, 4, 1);
+          topBox.position.set(0, 8, 2);
+          topBox.rotation.x = Math.PI / 2;
+          envScene.add(topBox);
+
+          // Key angled softbox (warm white)
+          const keyBox = new THREE.Mesh(
+            softboxGeo,
+            new THREE.MeshBasicMaterial({ color: 0xfff8eb, side: THREE.DoubleSide })
+          );
+          keyBox.scale.set(7, 9, 1);
+          keyBox.position.set(6.5, 3.0, 6.5);
+          keyBox.lookAt(0, 0, 0);
+          envScene.add(keyBox);
+
+          // Left fill softbox (cool studio blue-white)
+          const fillBox = new THREE.Mesh(
+            softboxGeo,
+            new THREE.MeshBasicMaterial({ color: 0xdbeafe, side: THREE.DoubleSide })
+          );
+          fillBox.scale.set(6, 8, 1);
+          fillBox.position.set(-7.5, 2.0, 4.5);
+          fillBox.lookAt(0, 0, 0);
+          envScene.add(fillBox);
+
+          // Back rim highlight strip
+          const rimBox = new THREE.Mesh(
+            softboxGeo,
+            new THREE.MeshBasicMaterial({ color: 0xe0e7ff, side: THREE.DoubleSide })
+          );
+          rimBox.scale.set(12, 3, 1);
+          rimBox.position.set(0, 4.5, -8.0);
+          rimBox.lookAt(0, 0, 0);
+          envScene.add(rimBox);
+
+          const envMapRT = pmremGenerator.fromScene(envScene, 0.04);
+          pmremGenerator.dispose();
+          softboxGeo.dispose();
+
+          return envMapRT.texture;
+        }
+
+        let studioEnvMap = createStudioEnvironmentMap();
+        scene.environment = studioEnvMap;
+
+        /* ==========================================================================
+           3. PIECE RIG, GLOSSY FLOOR REFLECTION & SOFT CONTACT SHADOW
+           ========================================================================== */
+        const rootStage = new THREE.Group();
+        scene.add(rootStage);
+
+        // Pivot group controlled by Front/Back/Flip/Cover animations and Auto-rotate
+        const piecePivot = new THREE.Group();
+        rootStage.add(piecePivot);
+
+        // Idle float container inside piecePivot
+        const floatGroup = new THREE.Group();
+        piecePivot.add(floatGroup);
+
+        // Mirror Reflection Rig (sits below floorY and mirrors piecePivot + floatGroup)
+        let currentFloorY = -1.45;
+        const reflectionRoot = new THREE.Group();
+        scene.add(reflectionRoot);
+
+        const reflectionPivot = new THREE.Group();
+        reflectionRoot.add(reflectionPivot);
+
+        // Generate Soft Contact Shadow + Floor Fade Texture
+        function createContactShadowTexture() {
+          const c = document.createElement('canvas');
+          c.width = 256;
+          c.height = 256;
+          const ctx = c.getContext('2d');
+          const grad = ctx.createRadialGradient(128, 128, 10, 128, 128, 120);
+          grad.addColorStop(0, 'rgba(0, 0, 0, 0.58)');
+          grad.addColorStop(0.45, 'rgba(0, 0, 0, 0.24)');
+          grad.addColorStop(1, 'rgba(0, 0, 0, 0.0)');
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, 256, 256);
+          const tex = new THREE.CanvasTexture(c);
+          return tex;
+        }
+
+        const contactShadowMat = new THREE.MeshBasicMaterial({
+          map: createContactShadowTexture(),
+          transparent: true,
+          depthWrite: false,
+          opacity: 0.78
+        });
+        const contactShadowMesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(1, 1),
+          contactShadowMat
+        );
+        contactShadowMesh.rotation.x = -Math.PI / 2;
+        scene.add(contactShadowMesh);
+
+        // Glossy Floor Gradient Fade Overlay Plane (sits at currentFloorY over mirrored mesh)
+        function createFloorFadeTexture(isLight) {
+          const c = document.createElement('canvas');
+          c.width = 512;
+          c.height = 512;
+          const ctx = c.getContext('2d');
+          const grad = ctx.createRadialGradient(256, 256, 15, 256, 256, 250);
+          if (isLight) {
+            grad.addColorStop(0, 'rgba(226, 232, 240, 0.72)');
+            grad.addColorStop(0.65, 'rgba(215, 222, 234, 0.90)');
+            grad.addColorStop(1, 'rgba(210, 216, 228, 0.0)');
+          } else {
+            grad.addColorStop(0, 'rgba(16, 18, 25, 0.72)');
+            grad.addColorStop(0.65, 'rgba(13, 15, 21, 0.92)');
+            grad.addColorStop(1, 'rgba(10, 12, 17, 0.0)');
+          }
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, 512, 512);
+          const tex = new THREE.CanvasTexture(c);
+          tex.encoding = THREE.sRGBEncoding;
+          return tex;
+        }
+
+        const floorFadeMat = new THREE.MeshBasicMaterial({
+          map: createFloorFadeTexture(false),
+          transparent: true,
+          depthWrite: false
+        });
+        const floorFadePlane = new THREE.Mesh(
+          new THREE.PlaneGeometry(24, 24),
+          floorFadeMat
+        );
+        floorFadePlane.rotation.x = -Math.PI / 2;
+        scene.add(floorFadePlane);
+
+        /* ==========================================================================
+           4. MATERIALS & PLACEHOLDER TEXTURE GENERATOR
+           ========================================================================== */
+        const frontMaterial = new THREE.MeshPhysicalMaterial({
+          color: 0xffffff,
+          envMap: studioEnvMap,
+          side: THREE.FrontSide
+        });
+
+        const backMaterial = new THREE.MeshPhysicalMaterial({
+          color: 0xffffff,
+          envMap: studioEnvMap,
+          side: THREE.FrontSide
+        });
+
+        // Crisp white paper cardstock edge material
+        const edgeMaterial = new THREE.MeshPhysicalMaterial({
+          color: 0xfbfbfa,
+          roughness: 0.78,
+          metalness: 0.0,
+          clearcoat: 0.0,
+          envMap: studioEnvMap,
+          envMapIntensity: 0.35,
+          side: THREE.FrontSide
+        });
+
+        // Mirrored floor reflection materials (attenuated opacity + DoubleSide for inverted Y scale)
+        const reflFrontMat = new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.24,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+        const reflBackMat = new THREE.MeshBasicMaterial({
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.24,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+        const reflEdgeMat = new THREE.MeshBasicMaterial({
+          color: 0xe5e7eb,
+          transparent: true,
+          opacity: 0.18,
+          side: THREE.DoubleSide,
+          depthWrite: false
+        });
+
+        let mainPieceMesh = null;
+        let reflectionPieceMesh = null;
+        let placeholderFrontTex = null;
+        let placeholderBackTex = null;
+        let activeFoldCleanupGeometries = [];
+        let mainFoldRig = null;
+        let reflFoldRig = null;
+        let labelsDirty = true;
+
+        function createPlaceholderTexture(sideLabel, productKey) {
+          const dims = getProductDimensions(productKey);
+          const aspect = dims.width / dims.height;
+
+          const baseRes = 1400;
+          const canvas = document.createElement('canvas');
+          if (aspect >= 1) {
+            canvas.width = baseRes;
+            canvas.height = Math.round(baseRes / aspect);
+          } else {
+            canvas.width = Math.round(baseRes * aspect);
+            canvas.height = baseRes;
+          }
+
+          const w = canvas.width;
+          const h = canvas.height;
+          const ctx = canvas.getContext('2d');
+
+          // Elegant warm light gray paper stock background
+          const bgGrad = ctx.createLinearGradient(0, 0, w, h);
+          bgGrad.addColorStop(0, '#f3f4f6');
+          bgGrad.addColorStop(1, '#e5e7eb');
+          ctx.fillStyle = bgGrad;
+          ctx.fillRect(0, 0, w, h);
+
+          // Subtle technical grid
+          ctx.strokeStyle = 'rgba(17, 24, 39, 0.045)';
+          ctx.lineWidth = 2;
+          const step = Math.round(Math.min(w, h) / 10);
+          for (let x = step; x < w; x += step) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+            ctx.stroke();
+          }
+          for (let y = step; y < h; y += step) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+          }
+
+          // Safe margin dashed border
+          const pad = Math.round(Math.min(w, h) * 0.055);
+          ctx.strokeStyle = 'rgba(107, 114, 128, 0.36)';
+          ctx.lineWidth = Math.max(2, Math.round(Math.min(w, h) * 0.0035));
+          ctx.setLineDash([12, 10]);
+          ctx.strokeRect(pad, pad, w - pad * 2, h - pad * 2);
           ctx.setLineDash([]);
 
-          const isOutside = sideLabel.toUpperCase() === 'FRONT';
-          const isZ = state.products.trifold.foldStyle === 'zfold';
-          const p1 = isOutside ? (isZ ? 'FRONT COVER' : 'INSIDE FLAP') : 'INSIDE LEFT';
-          const p2 = isOutside ? 'BACK PANEL' : 'INSIDE CENTER';
-          const p3 = isOutside ? (isZ ? 'BACK FLAP' : 'FRONT COVER') : 'INSIDE RIGHT';
-          const spreadLabel = isOutside ? 'OUTSIDE SPREAD (FRONT)' : 'INSIDE SPREAD (BACK)';
-
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          const pTitleSize = Math.round(Math.min(w / 3, h) * 0.12);
-          ctx.font = `700 ${pTitleSize}px Inter, -apple-system, sans-serif`;
-          ctx.fillStyle = '#374151';
-          ctx.fillText(p1, w * (1 / 6), h * 0.43);
-          ctx.fillText(p2, w * 0.5, h * 0.43);
-          ctx.fillText(p3, w * (5 / 6), h * 0.43);
-
-          const pSubSize = Math.round(Math.min(w / 3, h) * 0.062);
-          ctx.font = `600 ${pSubSize}px Inter, -apple-system, sans-serif`;
-          ctx.fillStyle = '#6366f1';
-          const panelStr = `${(dims.width / 3).toFixed(2)}" × ${dims.height.toFixed(2)}"`;
-          ctx.fillText(panelStr, w * (1 / 6), h * 0.52);
-          ctx.fillText(panelStr, w * 0.5, h * 0.52);
-          ctx.fillText(panelStr, w * (5 / 6), h * 0.52);
-
-          ctx.fillStyle = '#6b7280';
-          ctx.font = `600 ${Math.round(pSubSize * 0.95)}px Inter, -apple-system, sans-serif`;
-          ctx.fillText(
-            `${spreadLabel} • Open: ${dims.width.toFixed(2)}" × ${dims.height.toFixed(2)}"`,
-            w * 0.5,
-            h * 0.86
-          );
-        } else {
-          // If Door Hanger & die-cut enabled, draw die-cut hole safe ring guide
-          if (productKey === 'doorHanger' && state.products.doorHanger.showDieCut) {
-            const holeCenterY = h * ((4.25 - 2.65) / 8.5);
-            const holeCenterX = w * 0.5;
-            const holeRadiusPx = w * (0.625 / 3.5);
-            ctx.strokeStyle = 'rgba(99, 102, 241, 0.45)';
+          // Special fold guide lines & panel headers for Bi-Fold and Tri-Fold
+          if (productKey === 'bifold') {
+            const midX = w * 0.5;
+            ctx.strokeStyle = 'rgba(99, 102, 241, 0.65)';
             ctx.lineWidth = 3;
-            ctx.setLineDash([8, 6]);
+            ctx.setLineDash([14, 10]);
             ctx.beginPath();
-            ctx.arc(holeCenterX, holeCenterY, holeRadiusPx + 12, 0, Math.PI * 2);
+            ctx.moveTo(midX, 0);
+            ctx.lineTo(midX, h);
             ctx.stroke();
             ctx.setLineDash([]);
-          }
 
-          // Center Typography ("FRONT" / "BACK" + Dimensions)
-          const centerY = productKey === 'doorHanger' ? h * 0.56 : h * 0.5;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-
-          const titleSize = Math.round(Math.min(w, h) * 0.16);
-          ctx.font = `700 ${titleSize}px Inter, -apple-system, sans-serif`;
-          ctx.fillStyle = '#374151';
-          ctx.fillText(sideLabel.toUpperCase(), w / 2, centerY - titleSize * 0.32);
-
-          const dimSize = Math.round(Math.min(w, h) * 0.056);
-          ctx.font = `600 ${dimSize}px Inter, -apple-system, sans-serif`;
-          ctx.fillStyle = '#6b7280';
-          ctx.fillText(
-            `${dims.width.toFixed(1)}" × ${dims.height.toFixed(1)}" • ${dims.recPxText}`,
-            w / 2,
-            centerY + titleSize * 0.48
-          );
-
-          const subSize = Math.round(Math.min(w, h) * 0.042);
-          ctx.font = `500 ${subSize}px Inter, -apple-system, sans-serif`;
-          ctx.fillStyle = '#9ca3af';
-          ctx.fillText(
-            `${state.products[productKey].name.toUpperCase()} MOCKUP`,
-            w / 2,
-            centerY + titleSize * 0.92
-          );
-        }
-
-        const tex = new THREE.CanvasTexture(canvas);
-        tex.encoding = THREE.sRGBEncoding;
-        tex.anisotropy = maxAnisotropy;
-        tex.minFilter = THREE.LinearMipmapLinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        tex.generateMipmaps = true;
-        tex.needsUpdate = true;
-        return tex;
-      }
-
-      /* ==========================================================================
-         5. REAL-SCALE 3D GEOMETRY BUILDER (THREE.Shape + Holes + Extrude + UVs)
-         ========================================================================== */
-      function createRoundedRectShape(width, height, radius) {
-        const shape = new THREE.Shape();
-        const x = -width / 2;
-        const y = -height / 2;
-        const r = Math.min(radius, width / 2, height / 2);
-
-        shape.moveTo(x + r, y);
-        shape.lineTo(x + width - r, y);
-        shape.quadraticCurveTo(x + width, y, x + width, y + r);
-        shape.lineTo(x + width, y + height - r);
-        shape.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-        shape.lineTo(x + r, y + height);
-        shape.quadraticCurveTo(x, y + height, x, y + height - r);
-        shape.lineTo(x, y + r);
-        shape.quadraticCurveTo(x, y, x + r, y);
-        return shape;
-      }
-
-      function createDoorHangerDieCutHolePath(width, height) {
-        // Standard door hanger: 3.5" x 8.5"
-        // Hole centered at x = 0, y = +2.65" (1.6" from top edge), radius = 0.625" (1.25" diameter)
-        // Plus angled access slit extending from top-left of the circle toward the left edge
-        const hole = new THREE.Path();
-        const cx = 0;
-        const cy = 2.65;
-        const r = 0.625;
-
-        // Slit angle at 152 degrees (upper-left standard door hanger slit)
-        const slitCenterAngle = (152 * Math.PI) / 180;
-        const slitHalfAngle = 0.042; // ~0.05" slit width on circle perimeter
-        const a1 = slitCenterAngle - slitHalfAngle;
-        const a2 = slitCenterAngle + slitHalfAngle;
-
-        const dirX = Math.cos(slitCenterAngle);
-        const dirY = Math.sin(slitCenterAngle);
-        const perpX = -dirY;
-        const perpY = dirX;
-        const halfSlitW = 0.024;
-
-        // Reach right up to the left outer edge (-width/2 + 0.008 in) so triangulation stays valid
-        const targetX = -width / 2 + 0.008;
-        const t = (targetX - cx) / dirX;
-        const endX = cx + dirX * t;
-        const endY = cy + dirY * t;
-
-        // Start at circle point a2, go around the circle to a1, then out along the slit and back
-        hole.absarc(cx, cy, r, a2, a1 + Math.PI * 2, false);
-        hole.lineTo(endX - perpX * halfSlitW, endY - perpY * halfSlitW);
-        hole.lineTo(endX + perpX * halfSlitW, endY + perpY * halfSlitW);
-        hole.closePath();
-
-        return hole;
-      }
-
-      function buildProductGeometry(productKey) {
-        const dims = getProductDimensions(productKey);
-        const W = dims.width;
-        const H = dims.height;
-        const T = dims.thickness;
-        const R = dims.cornerRadius;
-
-        const shape = createRoundedRectShape(W, H, R);
-
-        if (productKey === 'doorHanger' && state.products.doorHanger.showDieCut) {
-          const holePath = createDoorHangerDieCutHolePath(W, H);
-          shape.holes.push(holePath);
-        }
-
-        const extrudeSettings = {
-          depth: T,
-          bevelEnabled: true,
-          bevelSegments: 2,
-          steps: 1,
-          bevelSize: 0.0025,
-          bevelThickness: 0.0025,
-          curveSegments: 48
-        };
-
-        const rawGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-        // Center geometry in Z so Front is +T/2 and Back is -T/2
-        rawGeo.translate(0, 0, -T / 2);
-
-        // Rebuild BufferGeometry into 3 distinct material groups:
-        // 0: Front Face (+Z), 1: Back Face (-Z), 2: Paper White Edge (Side walls & bevels)
-        // And compute normalized [0..1] planar UVs with mirrored U on the Back face so text is never reversed
-        const posAttr = rawGeo.attributes.position;
-        const normAttr = rawGeo.attributes.normal;
-        const vertexCount = posAttr.count;
-
-        const frontPositions = [];
-        const frontNormals = [];
-        const frontUVs = [];
-
-        const backPositions = [];
-        const backNormals = [];
-        const backUVs = [];
-
-        const edgePositions = [];
-        const edgeNormals = [];
-        const edgeUVs = [];
-
-        for (let i = 0; i < vertexCount; i += 3) {
-          // Determine triangle orientation using average Z normal
-          const nz = (normAttr.getZ(i) + normAttr.getZ(i + 1) + normAttr.getZ(i + 2)) / 3;
-
-          for (let k = 0; k < 3; k++) {
-            const idx = i + k;
-            const vx = posAttr.getX(idx);
-            const vy = posAttr.getY(idx);
-            const vz = posAttr.getZ(idx);
-
-            const nx = normAttr.getX(idx);
-            const ny = normAttr.getY(idx);
-            const vnZ = normAttr.getZ(idx);
-
-            if (nz > 0.85) {
-              // Front Face (+Z): standard left-to-right [0..1] UVs
-              frontPositions.push(vx, vy, vz);
-              frontNormals.push(nx, ny, vnZ);
-              const u = (vx + W / 2) / W;
-              const v = (vy + H / 2) / H;
-              frontUVs.push(u, v);
-            } else if (nz < -0.85) {
-              // Back Face (-Z): mirror U horizontally so when flipped 180° around Y, text reads left-to-right
-              backPositions.push(vx, vy, vz);
-              backNormals.push(nx, ny, vnZ);
-              const u = (W / 2 - vx) / W;
-              const v = (vy + H / 2) / H;
-              backUVs.push(u, v);
-            } else {
-              // Paper Edge (side walls & die-cut hole walls)
-              edgePositions.push(vx, vy, vz);
-              edgeNormals.push(nx, ny, vnZ);
-              edgeUVs.push(0.5, 0.5);
-            }
-          }
-        }
-
-        rawGeo.dispose();
-
-        const finalGeo = new THREE.BufferGeometry();
-        const allPositions = new Float32Array(
-          frontPositions.length + backPositions.length + edgePositions.length
-        );
-        allPositions.set(frontPositions, 0);
-        allPositions.set(backPositions, frontPositions.length);
-        allPositions.set(edgePositions, frontPositions.length + backPositions.length);
-
-        const allNormals = new Float32Array(
-          frontNormals.length + backNormals.length + edgeNormals.length
-        );
-        allNormals.set(frontNormals, 0);
-        allNormals.set(backNormals, frontNormals.length);
-        allNormals.set(edgeNormals, frontNormals.length + backNormals.length);
-
-        const allUVs = new Float32Array(
-          frontUVs.length + backUVs.length + edgeUVs.length
-        );
-        allUVs.set(frontUVs, 0);
-        allUVs.set(backUVs, frontUVs.length);
-        allUVs.set(edgeUVs, frontUVs.length + backUVs.length);
-
-        finalGeo.setAttribute('position', new THREE.BufferAttribute(allPositions, 3));
-        finalGeo.setAttribute('normal', new THREE.BufferAttribute(allNormals, 3));
-        finalGeo.setAttribute('uv', new THREE.BufferAttribute(allUVs, 2));
-
-        const frontVertCount = frontPositions.length / 3;
-        const backVertCount = backPositions.length / 3;
-        const edgeVertCount = edgePositions.length / 3;
-
-        finalGeo.addGroup(0, frontVertCount, 0);
-        finalGeo.addGroup(frontVertCount, backVertCount, 1);
-        finalGeo.addGroup(frontVertCount + backVertCount, edgeVertCount, 2);
-
-        finalGeo.computeBoundingSphere();
-        return finalGeo;
-      }
-
-      /**
-       * Builds a single extruded panel geometry for Bi-Fold / Tri-Fold brochures
-       * with UVs mapped to a horizontal slice [uStart .. uEnd] of the full spread texture.
-       */
-      function buildFoldPanelGeometry(panelWidth, panelHeight, thickness, uStart, uEnd, originOffsetX) {
-        const shape = createRoundedRectShape(panelWidth, panelHeight, 0.015);
-        const extrudeSettings = {
-          depth: thickness,
-          bevelEnabled: true,
-          bevelSegments: 2,
-          steps: 1,
-          bevelSize: 0.002,
-          bevelThickness: 0.002,
-          curveSegments: 16
-        };
-
-        const rawGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-        rawGeo.translate(originOffsetX, 0, -thickness / 2);
-
-        const posAttr = rawGeo.attributes.position;
-        const normAttr = rawGeo.attributes.normal;
-        const vertexCount = posAttr.count;
-
-        const frontPositions = [];
-        const frontNormals = [];
-        const frontUVs = [];
-
-        const backPositions = [];
-        const backNormals = [];
-        const backUVs = [];
-
-        const edgePositions = [];
-        const edgeNormals = [];
-        const edgeUVs = [];
-
-        const minX = originOffsetX - panelWidth / 2;
-
-        for (let i = 0; i < vertexCount; i += 3) {
-          const nz = (normAttr.getZ(i) + normAttr.getZ(i + 1) + normAttr.getZ(i + 2)) / 3;
-
-          for (let k = 0; k < 3; k++) {
-            const idx = i + k;
-            const vx = posAttr.getX(idx);
-            const vy = posAttr.getY(idx);
-            const vz = posAttr.getZ(idx);
-
-            const nx = normAttr.getX(idx);
-            const ny = normAttr.getY(idx);
-            const vnZ = normAttr.getZ(idx);
-
-            const localT = (vx - minX) / panelWidth; // 0..1 across this panel
-            const v = (vy + panelHeight / 2) / panelHeight;
-
-            if (nz > 0.85) {
-              // Front Face (+Z = Outside Spread)
-              frontPositions.push(vx, vy, vz);
-              frontNormals.push(nx, ny, vnZ);
-              const u = uStart + localT * (uEnd - uStart);
-              frontUVs.push(u, v);
-            } else if (nz < -0.85) {
-              // Back Face (-Z = Inside Spread, mirrored horizontally so when viewed from -Z it reads left-to-right)
-              backPositions.push(vx, vy, vz);
-              backNormals.push(nx, ny, vnZ);
-              const backUStart = 1.0 - uEnd;
-              const backUEnd = 1.0 - uStart;
-              const u = backUEnd - localT * (backUEnd - backUStart);
-              backUVs.push(u, v);
-            } else {
-              edgePositions.push(vx, vy, vz);
-              edgeNormals.push(nx, ny, vnZ);
-              edgeUVs.push(0.5, 0.5);
-            }
-          }
-        }
-
-        rawGeo.dispose();
-
-        const finalGeo = new THREE.BufferGeometry();
-        const allPositions = new Float32Array(
-          frontPositions.length + backPositions.length + edgePositions.length
-        );
-        allPositions.set(frontPositions, 0);
-        allPositions.set(backPositions, frontPositions.length);
-        allPositions.set(edgePositions, frontPositions.length + backPositions.length);
-
-        const allNormals = new Float32Array(
-          frontNormals.length + backNormals.length + edgeNormals.length
-        );
-        allNormals.set(frontNormals, 0);
-        allNormals.set(backNormals, frontNormals.length);
-        allNormals.set(edgeNormals, frontNormals.length + backNormals.length);
-
-        const allUVs = new Float32Array(
-          frontUVs.length + backUVs.length + edgeUVs.length
-        );
-        allUVs.set(frontUVs, 0);
-        allUVs.set(backUVs, frontUVs.length);
-        allUVs.set(edgeUVs, frontUVs.length + backUVs.length);
-
-        finalGeo.setAttribute('position', new THREE.BufferAttribute(allPositions, 3));
-        finalGeo.setAttribute('normal', new THREE.BufferAttribute(allNormals, 3));
-        finalGeo.setAttribute('uv', new THREE.BufferAttribute(allUVs, 2));
-
-        const frontVertCount = frontPositions.length / 3;
-        const backVertCount = backPositions.length / 3;
-        const edgeVertCount = edgePositions.length / 3;
-
-        finalGeo.addGroup(0, frontVertCount, 0);
-        finalGeo.addGroup(frontVertCount, backVertCount, 1);
-        finalGeo.addGroup(frontVertCount + backVertCount, edgeVertCount, 2);
-
-        finalGeo.computeBoundingSphere();
-        return finalGeo;
-      }
-
-      /**
-       * Creates an articulated 3D hierarchy for Bi-Fold (2 hinged panels) or Tri-Fold (3 hinged panels)
-       */
-      function createArticulatedFoldGroup(productKey, materialsArray) {
-        const dims = getProductDimensions(productKey);
-        const W = dims.width;
-        const H = dims.height;
-        const T = dims.thickness;
-
-        const container = new THREE.Group();
-
-        if (productKey === 'bifold') {
-          const panelW = W / 2;
-          // Left panel hinged at x = 0 (extends from -panelW to 0)
-          const leftGeo = buildFoldPanelGeometry(panelW, H, T, 0.0, 0.5, -panelW / 2);
-          // Right panel hinged at x = 0 (extends from 0 to +panelW)
-          const rightGeo = buildFoldPanelGeometry(panelW, H, T, 0.5, 1.0, panelW / 2);
-          activeFoldCleanupGeometries.push(leftGeo, rightGeo);
-
-          const leftHinge = new THREE.Group();
-          const rightHinge = new THREE.Group();
-
-          const leftMesh = new THREE.Mesh(leftGeo, materialsArray);
-          const rightMesh = new THREE.Mesh(rightGeo, materialsArray);
-
-          leftHinge.add(leftMesh);
-          rightHinge.add(rightMesh);
-          container.add(leftHinge, rightHinge);
-
-          container.userData.rig = { type: 'bifold', leftHinge, rightHinge, thickness: T };
-        } else {
-          // Tri-fold: 3 panels of width W / 3
-          const panelW = W / 3;
-          // Left panel (u: 0..1/3) attached to leftHinge at x = -panelW / 2, extends to the left (-panelW to 0 in hinge space)
-          const leftGeo = buildFoldPanelGeometry(panelW, H, T, 0.0, 1 / 3, -panelW / 2);
-          // Center panel (u: 1/3..2/3) centered at x = 0
-          const centerGeo = buildFoldPanelGeometry(panelW, H, T, 1 / 3, 2 / 3, 0);
-          // Right panel (u: 2/3..1.0) attached to rightHinge at x = +panelW / 2, extends to the right (0 to +panelW in hinge space)
-          const rightGeo = buildFoldPanelGeometry(panelW, H, T, 2 / 3, 1.0, panelW / 2);
-          activeFoldCleanupGeometries.push(leftGeo, centerGeo, rightGeo);
-
-          const centerMesh = new THREE.Mesh(centerGeo, materialsArray);
-          const leftHinge = new THREE.Group();
-          leftHinge.position.set(-panelW / 2, 0, 0);
-          leftHinge.add(new THREE.Mesh(leftGeo, materialsArray));
-
-          const rightHinge = new THREE.Group();
-          rightHinge.position.set(panelW / 2, 0, 0);
-          rightHinge.add(new THREE.Mesh(rightGeo, materialsArray));
-
-          container.add(centerMesh, leftHinge, rightHinge);
-          container.userData.rig = { type: 'trifold', leftHinge, rightHinge, thickness: T };
-        }
-
-        return container;
-      }
-
-      function applyFoldArticulation(rigData) {
-        if (!rigData) return;
-        const prod = state.products[state.activeProduct];
-        const pct = Math.max(0, Math.min(100, Number(prod.foldPercent) || 0)) / 100;
-
-        if (rigData.type === 'bifold') {
-          // Fold both halves symmetrically toward -Z (Inside faces each other, Outside cover on the exterior)
-          const maxHalfAngle = (Math.PI / 2) * 0.985;
-          const angle = pct * maxHalfAngle;
-          rigData.leftHinge.rotation.y = -angle;
-          rigData.rightHinge.rotation.y = angle;
-          // Subtle Z offset when nearly closed to avoid coplanar overlap
-          rigData.rightHinge.position.z = pct * rigData.thickness * 0.6;
-        } else if (rigData.type === 'trifold') {
-          const maxFoldAngle = Math.PI * 0.982;
-          const isZ = state.products.trifold.foldStyle === 'zfold';
-          if (isZ) {
-            // Accordion Z-Fold: left panel folds toward +Z, right panel folds toward -Z
-            const angle = pct * maxFoldAngle;
-            rigData.leftHinge.rotation.y = angle;
-            rigData.rightHinge.rotation.y = angle;
-            rigData.leftHinge.position.z = pct * rigData.thickness * 1.1;
-            rigData.rightHinge.position.z = -pct * rigData.thickness * 1.1;
+            // Panel labels
+            const isOutside = sideLabel.toUpperCase() === 'FRONT';
+            const leftTitle = isOutside ? 'BACK COVER' : 'INSIDE LEFT';
+            const rightTitle = isOutside ? 'FRONT COVER' : 'INSIDE RIGHT';
+            const spreadLabel = isOutside ? 'OUTSIDE SPREAD (FRONT)' : 'INSIDE SPREAD (BACK)';
+
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const pTitleSize = Math.round(Math.min(w / 2, h) * 0.11);
+            ctx.font = `700 ${pTitleSize}px Inter, -apple-system, sans-serif`;
+            ctx.fillStyle = '#374151';
+            ctx.fillText(leftTitle, w * 0.25, h * 0.43);
+            ctx.fillText(rightTitle, w * 0.75, h * 0.43);
+
+            const pSubSize = Math.round(Math.min(w / 2, h) * 0.052);
+            ctx.font = `600 ${pSubSize}px Inter, -apple-system, sans-serif`;
+            ctx.fillStyle = '#6366f1';
+            ctx.fillText(
+              `Panel: ${(dims.width / 2).toFixed(2)}" × ${dims.height.toFixed(2)}"`,
+              w * 0.25,
+              h * 0.52
+            );
+            ctx.fillText(
+              `Panel: ${(dims.width / 2).toFixed(2)}" × ${dims.height.toFixed(2)}"`,
+              w * 0.75,
+              h * 0.52
+            );
+
+            ctx.fillStyle = '#6b7280';
+            ctx.font = `600 ${Math.round(pSubSize * 0.92)}px Inter, -apple-system, sans-serif`;
+            ctx.fillText(
+              `${spreadLabel} • Open: ${dims.width.toFixed(2)}" × ${dims.height.toFixed(2)}"`,
+              w * 0.5,
+              h * 0.86
+            );
+          } else if (productKey === 'trifold') {
+            const x1 = w / 3;
+            const x2 = (w * 2) / 3;
+            ctx.strokeStyle = 'rgba(99, 102, 241, 0.65)';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([14, 10]);
+            [x1, x2].forEach((xPos) => {
+              ctx.beginPath();
+              ctx.moveTo(xPos, 0);
+              ctx.lineTo(xPos, h);
+              ctx.stroke();
+            });
+            ctx.setLineDash([]);
+
+            const isOutside = sideLabel.toUpperCase() === 'FRONT';
+            const isZ = state.products.trifold.foldStyle === 'zfold';
+            const p1 = isOutside ? (isZ ? 'FRONT COVER' : 'INSIDE FLAP') : 'INSIDE LEFT';
+            const p2 = isOutside ? 'BACK PANEL' : 'INSIDE CENTER';
+            const p3 = isOutside ? (isZ ? 'BACK FLAP' : 'FRONT COVER') : 'INSIDE RIGHT';
+            const spreadLabel = isOutside ? 'OUTSIDE SPREAD (FRONT)' : 'INSIDE SPREAD (BACK)';
+
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const pTitleSize = Math.round(Math.min(w / 3, h) * 0.12);
+            ctx.font = `700 ${pTitleSize}px Inter, -apple-system, sans-serif`;
+            ctx.fillStyle = '#374151';
+            ctx.fillText(p1, w * (1 / 6), h * 0.43);
+            ctx.fillText(p2, w * 0.5, h * 0.43);
+            ctx.fillText(p3, w * (5 / 6), h * 0.43);
+
+            const pSubSize = Math.round(Math.min(w / 3, h) * 0.062);
+            ctx.font = `600 ${pSubSize}px Inter, -apple-system, sans-serif`;
+            ctx.fillStyle = '#6366f1';
+            const panelStr = `${(dims.width / 3).toFixed(2)}" × ${dims.height.toFixed(2)}"`;
+            ctx.fillText(panelStr, w * (1 / 6), h * 0.52);
+            ctx.fillText(panelStr, w * 0.5, h * 0.52);
+            ctx.fillText(panelStr, w * (5 / 6), h * 0.52);
+
+            ctx.fillStyle = '#6b7280';
+            ctx.font = `600 ${Math.round(pSubSize * 0.95)}px Inter, -apple-system, sans-serif`;
+            ctx.fillText(
+              `${spreadLabel} • Open: ${dims.width.toFixed(2)}" × ${dims.height.toFixed(2)}"`,
+              w * 0.5,
+              h * 0.86
+            );
           } else {
-            // Standard Roll (C-Fold): left inner flap folds in first toward -Z, right front cover folds over it
-            const leftAngle = Math.min(1, pct * 1.12) * maxFoldAngle;
-            const rightAngle = Math.pow(pct, 1.08) * maxFoldAngle;
-            rigData.leftHinge.rotation.y = -leftAngle;
-            rigData.rightHinge.rotation.y = rightAngle;
-            rigData.leftHinge.position.z = -pct * rigData.thickness * 0.85;
-            rigData.rightHinge.position.z = -pct * rigData.thickness * 2.1;
-          }
-        }
-      }
-
-      function updateFoldAnglesInScene() {
-        if (mainFoldRig) applyFoldArticulation(mainFoldRig);
-        if (reflFoldRig) applyFoldArticulation(reflFoldRig);
-      }
-
-      /* ==========================================================================
-         6. TEXTURE COVER/CROP-TO-FIT & MATERIAL UPDATER
-         ========================================================================== */
-      function applyCoverCropToTexture(texture, imgW, imgH, targetW, targetH) {
-        if (!texture || !imgW || !imgH) return;
-        const imgAspect = imgW / imgH;
-        const targetAspect = targetW / targetH;
-
-        texture.wrapS = THREE.ClampToEdgeWrapping;
-        texture.wrapT = THREE.ClampToEdgeWrapping;
-
-        if (imgAspect > targetAspect) {
-          // Image is wider than target: crop horizontally
-          const repeatX = targetAspect / imgAspect;
-          texture.repeat.set(repeatX, 1);
-          texture.offset.set((1 - repeatX) / 2, 0);
-        } else {
-          // Image is taller than target: crop vertically
-          const repeatY = imgAspect / targetAspect;
-          texture.repeat.set(1, repeatY);
-          texture.offset.set(0, (1 - repeatY) / 2);
-        }
-        texture.needsUpdate = true;
-      }
-
-      function updateFinishProperties() {
-        const prod = state.products[state.activeProduct];
-        const preset = FINISH_PRESETS[prod.finish] || FINISH_PRESETS.glossUV;
-
-        [frontMaterial, backMaterial].forEach((mat) => {
-          mat.roughness = preset.roughness;
-          mat.clearcoat = preset.clearcoat;
-          mat.clearcoatRoughness = preset.clearcoatRoughness;
-          mat.reflectivity = preset.reflectivity;
-          mat.envMapIntensity = preset.envMapIntensity;
-          mat.needsUpdate = true;
-        });
-      }
-
-      function updateProductTextures() {
-        const prodKey = state.activeProduct;
-        const prod = state.products[prodKey];
-        const dims = getProductDimensions(prodKey);
-
-        // Dispose previous placeholder textures to prevent memory leaks
-        if (placeholderFrontTex) {
-          placeholderFrontTex.dispose();
-          placeholderFrontTex = null;
-        }
-        if (placeholderBackTex) {
-          placeholderBackTex.dispose();
-          placeholderBackTex = null;
-        }
-
-        // Front Texture
-        if (prod.front.texture) {
-          applyCoverCropToTexture(
-            prod.front.texture,
-            prod.front.width,
-            prod.front.height,
-            dims.width,
-            dims.height
-          );
-          frontMaterial.map = prod.front.texture;
-          reflFrontMat.map = prod.front.texture;
-        } else {
-          placeholderFrontTex = createPlaceholderTexture('FRONT', prodKey);
-          frontMaterial.map = placeholderFrontTex;
-          reflFrontMat.map = placeholderFrontTex;
-        }
-
-        // Back Texture
-        if (prod.back.texture) {
-          applyCoverCropToTexture(
-            prod.back.texture,
-            prod.back.width,
-            prod.back.height,
-            dims.width,
-            dims.height
-          );
-          backMaterial.map = prod.back.texture;
-          reflBackMat.map = prod.back.texture;
-        } else {
-          placeholderBackTex = createPlaceholderTexture('BACK', prodKey);
-          backMaterial.map = placeholderBackTex;
-          reflBackMat.map = placeholderBackTex;
-        }
-
-        frontMaterial.needsUpdate = true;
-        backMaterial.needsUpdate = true;
-        reflFrontMat.needsUpdate = true;
-        reflBackMat.needsUpdate = true;
-
-        updateAspectWarnings();
-      }
-
-      function rebuildActiveMesh() {
-        if (mainPieceMesh) {
-          if (mainPieceMesh.geometry) mainPieceMesh.geometry.dispose();
-          floatGroup.remove(mainPieceMesh);
-          mainPieceMesh = null;
-        }
-        if (reflectionPieceMesh) {
-          reflectionPivot.remove(reflectionPieceMesh);
-          reflectionPieceMesh = null;
-        }
-        if (activeFoldCleanupGeometries.length > 0) {
-          activeFoldCleanupGeometries.forEach((g) => g.dispose());
-          activeFoldCleanupGeometries = [];
-        }
-        mainFoldRig = null;
-        reflFoldRig = null;
-
-        const mainMats = [frontMaterial, backMaterial, edgeMaterial];
-        const reflMats = [reflFrontMat, reflBackMat, reflEdgeMat];
-
-        if (isFoldedProduct(state.activeProduct)) {
-          mainPieceMesh = createArticulatedFoldGroup(state.activeProduct, mainMats);
-          reflectionPieceMesh = createArticulatedFoldGroup(state.activeProduct, reflMats);
-          mainFoldRig = mainPieceMesh.userData.rig;
-          reflFoldRig = reflectionPieceMesh.userData.rig;
-          floatGroup.add(mainPieceMesh);
-          reflectionPivot.add(reflectionPieceMesh);
-          updateFoldAnglesInScene();
-        } else {
-          const geometry = buildProductGeometry(state.activeProduct);
-          mainPieceMesh = new THREE.Mesh(geometry, mainMats);
-          floatGroup.add(mainPieceMesh);
-
-          // Mirrored floor reflection mesh sharing the same geometry
-          reflectionPieceMesh = new THREE.Mesh(geometry, reflMats);
-          reflectionPivot.add(reflectionPieceMesh);
-        }
-
-        // Update floor level and contact shadow scale for the product's physical dimensions
-        const dims = getProductDimensions(state.activeProduct);
-        currentFloorY = -(dims.height / 2 + 0.34);
-
-        floorFadePlane.position.y = currentFloorY;
-        contactShadowMesh.position.y = currentFloorY + 0.002;
-        const effectiveSpanW = isFoldedProduct(state.activeProduct)
-          ? dims.foldedWidth + (dims.width - dims.foldedWidth) * (1 - (state.products[state.activeProduct].foldPercent || 0) / 100)
-          : dims.width;
-        contactShadowMesh.scale.set(effectiveSpanW * 1.4, Math.max(dims.foldedWidth, 2.2) * 0.65, 1);
-
-        // Position mirror reflection plane at y = 2 * currentFloorY with inverted Y scale
-        reflectionRoot.position.set(0, currentFloorY * 2, 0);
-        reflectionRoot.scale.set(1, -1, 1);
-
-        updateFinishProperties();
-        updateProductTextures();
-        updateTopbarSpecs();
-      }
-
-      /* ==========================================================================
-         7. SMOOTH CAMERA & PIECE ANIMATION SYSTEM (~0.8s Ease-In-Out)
-         ========================================================================== */
-      let activeTween = null;
-      let scaleTransition = null;
-
-      function easeInOutCubic(t) {
-        return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-      }
-
-      function getIdealCameraDistance(productKey) {
-        const dims = getProductDimensions(productKey);
-        const maxDim = Math.max(dims.width, dims.height);
-        const isMobile = window.innerWidth <= 820;
-        const baseFactor = isMobile ? 1.85 : 1.52;
-        return Math.max(5.2, maxDim * baseFactor);
-      }
-
-      function animateToView(viewMode, durationMs = 800) {
-        state.activeView = viewMode;
-        updateViewButtonsUI();
-
-        const dist = getIdealCameraDistance(state.activeProduct);
-        const startCamPos = camera.position.clone();
-        const startTarget = controls.target.clone();
-        const startRotX = piecePivot.rotation.x;
-        const startRotY = piecePivot.rotation.y;
-        const startRotZ = piecePivot.rotation.z;
-
-        let endRotX = 0;
-        let endRotY = 0;
-        let endRotZ = 0;
-        const endCamPos = new THREE.Vector3(0, 0.12, dist);
-        const endTarget = new THREE.Vector3(0, -0.1, 0);
-
-        // Normalize current Y rotation to [-PI, PI] for shortest path
-        const normStartY = Math.atan2(Math.sin(startRotY), Math.cos(startRotY));
-
-        if (viewMode === 'front') {
-          endRotX = 0;
-          endRotY = 0;
-          endRotZ = 0;
-        } else if (viewMode === 'back') {
-          endRotX = 0;
-          endRotY = normStartY < 0 ? -Math.PI : Math.PI;
-          endRotZ = 0;
-        } else {
-          // 'cover' angled hero view
-          endRotX = -0.09;
-          endRotY = -0.34;
-          endRotZ = 0.02;
-          endCamPos.set(0.35, 0.42, dist * 0.96);
-        }
-
-        activeTween = {
-          startTime: performance.now(),
-          duration: durationMs,
-          startCamPos,
-          endCamPos,
-          startTarget,
-          endTarget,
-          startRotX,
-          startRotY: normStartY,
-          startRotZ,
-          endRotX,
-          endRotY,
-          endRotZ
-        };
-      }
-
-      function flipPieceSmoothly() {
-        state.autoRotate = false;
-        syncAutoRotateUI();
-
-        const normY = Math.atan2(Math.sin(piecePivot.rotation.y), Math.cos(piecePivot.rotation.y));
-        const isShowingBack = Math.abs(normY) > Math.PI * 0.5;
-        animateToView(isShowingBack ? 'front' : 'back', 800);
-      }
-
-      function switchProductWithTransition(newProductKey) {
-        if (newProductKey === state.activeProduct) return;
-
-        const startTime = performance.now();
-        const halfDuration = 190;
-
-        scaleTransition = {
-          phase: 'out',
-          startTime,
-          halfDuration,
-          onMidpoint: () => {
-            state.activeProduct = newProductKey;
-            syncProductUI();
-            rebuildActiveMesh();
-            animateToView(state.activeView, 650);
-          }
-        };
-      }
-
-      /* ==========================================================================
-         8. ARTWORK UPLOAD, ASPECT RATIO CHECK (<3%) & THUMBNAIL HANDLING
-         ========================================================================== */
-      function showToast(msg) {
-        const el = document.getElementById('toast-msg');
-        if (!el) return;
-        el.textContent = msg;
-        el.classList.add('show');
-        clearTimeout(showToast._timer);
-        showToast._timer = setTimeout(() => {
-          el.classList.remove('show');
-        }, 3200);
-      }
-
-      function updateAspectWarnings() {
-        const prodKey = state.activeProduct;
-        const prod = state.products[prodKey];
-        const dims = getProductDimensions(prodKey);
-        const targetAspect = dims.width / dims.height;
-
-        ['front', 'back'].forEach((side) => {
-          const warnEl = document.getElementById(`warning-${side}`);
-          const slot = prod[side];
-          if (!warnEl) return;
-
-          if (slot && slot.dataUrl && slot.width && slot.height) {
-            const imgAspect = slot.width / slot.height;
-            const diffRatio = Math.abs(imgAspect - targetAspect) / targetAspect;
-
-            if (diffRatio > 0.03) {
-              const pct = Math.round(diffRatio * 100);
-              warnEl.textContent = `Aspect ratio differs by ${pct}%. Auto-cropped to fit. Recommended: ${dims.recPxText}.`;
-              warnEl.classList.add('visible');
-            } else {
-              warnEl.classList.remove('visible');
-              warnEl.textContent = '';
+            // If Door Hanger & die-cut enabled, draw die-cut hole safe ring guide
+            if (productKey === 'doorHanger' && state.products.doorHanger.showDieCut) {
+              const holeCenterY = h * ((4.25 - 2.65) / 8.5);
+              const holeCenterX = w * 0.5;
+              const holeRadiusPx = w * (0.625 / 3.5);
+              ctx.strokeStyle = 'rgba(99, 102, 241, 0.45)';
+              ctx.lineWidth = 3;
+              ctx.setLineDash([8, 6]);
+              ctx.beginPath();
+              ctx.arc(holeCenterX, holeCenterY, holeRadiusPx + 12, 0, Math.PI * 2);
+              ctx.stroke();
+              ctx.setLineDash([]);
             }
-          } else {
-            warnEl.classList.remove('visible');
-            warnEl.textContent = '';
+
+            // Center Typography ("FRONT" / "BACK" + Dimensions)
+            const centerY = productKey === 'doorHanger' ? h * 0.56 : h * 0.5;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+
+            const titleSize = Math.round(Math.min(w, h) * 0.16);
+            ctx.font = `700 ${titleSize}px Inter, -apple-system, sans-serif`;
+            ctx.fillStyle = '#374151';
+            ctx.fillText(sideLabel.toUpperCase(), w / 2, centerY - titleSize * 0.32);
+
+            const dimSize = Math.round(Math.min(w, h) * 0.056);
+            ctx.font = `600 ${dimSize}px Inter, -apple-system, sans-serif`;
+            ctx.fillStyle = '#6b7280';
+            ctx.fillText(
+              `${dims.width.toFixed(1)}" × ${dims.height.toFixed(1)}" • ${dims.recPxText}`,
+              w / 2,
+              centerY + titleSize * 0.48
+            );
+
+            const subSize = Math.round(Math.min(w, h) * 0.042);
+            ctx.font = `500 ${subSize}px Inter, -apple-system, sans-serif`;
+            ctx.fillStyle = '#9ca3af';
+            ctx.fillText(
+              `${state.products[productKey].name.toUpperCase()} MOCKUP`,
+              w / 2,
+              centerY + titleSize * 0.92
+            );
           }
-        });
-      }
 
-      function loadArtworkFromDataUrl(productKey, side, dataUrl, onReady) {
-        const img = new Image();
-        img.onload = function () {
-          const prod = state.products[productKey];
-          const slot = prod[side];
-
-          if (slot.texture) {
-            slot.texture.dispose();
-          }
-
-          const tex = new THREE.Texture(img);
+          const tex = new THREE.CanvasTexture(canvas);
           tex.encoding = THREE.sRGBEncoding;
           tex.anisotropy = maxAnisotropy;
           tex.minFilter = THREE.LinearMipmapLinearFilter;
           tex.magFilter = THREE.LinearFilter;
           tex.generateMipmaps = true;
           tex.needsUpdate = true;
+          return tex;
+        }
 
-          slot.dataUrl = dataUrl;
-          slot.width = img.naturalWidth || img.width;
-          slot.height = img.naturalHeight || img.height;
-          slot.texture = tex;
+        /* ==========================================================================
+           5. REAL-SCALE 3D GEOMETRY BUILDER (THREE.Shape + Holes + Extrude + UVs)
+           ========================================================================== */
+        function createRoundedRectShape(width, height, radius) {
+          const shape = new THREE.Shape();
+          const x = -width / 2;
+          const y = -height / 2;
+          const r = Math.min(radius, width / 2, height / 2);
 
-          if (productKey === state.activeProduct) {
-            updateProductTextures();
-            syncUploadCardsUI();
+          shape.moveTo(x + r, y);
+          shape.lineTo(x + width - r, y);
+          shape.quadraticCurveTo(x + width, y, x + width, y + r);
+          shape.lineTo(x + width, y + height - r);
+          shape.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+          shape.lineTo(x + r, y + height);
+          shape.quadraticCurveTo(x, y + height, x, y + height - r);
+          shape.lineTo(x, y + r);
+          shape.quadraticCurveTo(x, y, x + r, y);
+          return shape;
+        }
+
+        function createDoorHangerDieCutHolePath(width, height) {
+          // Standard door hanger: 3.5" x 8.5"
+          // Hole centered at x = 0, y = +2.65" (1.6" from top edge), radius = 0.625" (1.25" diameter)
+          // Plus angled access slit extending from top-left of the circle toward the left edge
+          const hole = new THREE.Path();
+          const cx = 0;
+          const cy = 2.65;
+          const r = 0.625;
+
+          // Slit angle at 152 degrees (upper-left standard door hanger slit)
+          const slitCenterAngle = (152 * Math.PI) / 180;
+          const slitHalfAngle = 0.042; // ~0.05" slit width on circle perimeter
+          const a1 = slitCenterAngle - slitHalfAngle;
+          const a2 = slitCenterAngle + slitHalfAngle;
+
+          const dirX = Math.cos(slitCenterAngle);
+          const dirY = Math.sin(slitCenterAngle);
+          const perpX = -dirY;
+          const perpY = dirX;
+          const halfSlitW = 0.024;
+
+          // Reach right up to the left outer edge (-width/2 + 0.008 in) so triangulation stays valid
+          const targetX = -width / 2 + 0.008;
+          const t = (targetX - cx) / dirX;
+          const endX = cx + dirX * t;
+          const endY = cy + dirY * t;
+
+          // Start at circle point a2, go around the circle to a1, then out along the slit and back
+          hole.absarc(cx, cy, r, a2, a1 + Math.PI * 2, false);
+          hole.lineTo(endX - perpX * halfSlitW, endY - perpY * halfSlitW);
+          hole.lineTo(endX + perpX * halfSlitW, endY + perpY * halfSlitW);
+          hole.closePath();
+
+          return hole;
+        }
+
+        function buildProductGeometry(productKey) {
+          const dims = getProductDimensions(productKey);
+          const W = dims.width;
+          const H = dims.height;
+          const T = dims.thickness;
+          const R = dims.cornerRadius;
+
+          const shape = createRoundedRectShape(W, H, R);
+
+          if (productKey === 'doorHanger' && state.products.doorHanger.showDieCut) {
+            const holePath = createDoorHangerDieCutHolePath(W, H);
+            shape.holes.push(holePath);
           }
-          if (onReady) onReady();
-        };
-        img.src = dataUrl;
-      }
 
-      function handleFileSelect(side, file) {
-        if (!file) return;
-        const validTypes = ['image/png', 'image/jpeg', 'image/webp'];
-        if (!validTypes.includes(file.type)) {
-          showToast('Please upload a PNG, JPG, or WEBP image.');
-          return;
-        }
-
-        const reader = new FileReader();
-        reader.onload = function (e) {
-          const dataUrl = e.target.result;
-          loadArtworkFromDataUrl(state.activeProduct, side, dataUrl, () => {
-            animateToView(side, 750);
-          });
-        };
-        reader.readAsDataURL(file);
-      }
-
-      function removeArtwork(side) {
-        const prod = state.products[state.activeProduct];
-        const slot = prod[side];
-        if (slot.texture) {
-          slot.texture.dispose();
-          slot.texture = null;
-        }
-        slot.dataUrl = null;
-        slot.width = 0;
-        slot.height = 0;
-
-        const fileInput = document.getElementById(`file-input-${side}`);
-        if (fileInput) fileInput.value = '';
-
-        updateProductTextures();
-        syncUploadCardsUI();
-      }
-
-      /* ==========================================================================
-         9. FLOATING 3D LABELS PROJECTION
-         ========================================================================== */
-      const labelCoverEl = document.getElementById('label-cover');
-      const labelFrontEl = document.getElementById('label-front');
-      const labelBackEl = document.getElementById('label-back');
-      const tempVec = new THREE.Vector3();
-      const tempNormal = new THREE.Vector3();
-
-      function updateFloating3DLabels() {
-        if (state.isClientMode || !state.showLabels || state.presentationMode || !mainPieceMesh) {
-          return;
-        }
-
-        const dims = getProductDimensions(state.activeProduct);
-        const halfW = dims.width / 2;
-        const halfH = dims.height / 2;
-        const halfT = dims.thickness / 2;
-
-        // 1. Cover Label: anchored above the top-left corner of the piece
-        tempVec.set(-halfW * 0.72, halfH + 0.28, 0);
-        floatGroup.localToWorld(tempVec);
-        projectToScreen(tempVec, labelCoverEl, 1.0);
-
-        // Compute world normal of the Front face (+Z in floatGroup local space)
-        tempNormal.set(0, 0, 1).applyQuaternion(piecePivot.quaternion);
-        const camDir = camera.position.clone().sub(controls.target).normalize();
-        const frontFacingDot = tempNormal.dot(camDir);
-
-        // 2. Front Label: anchored on the right edge of the Front face
-        tempVec.set(halfW + 0.35, 0.15, halfT + 0.04);
-        floatGroup.localToWorld(tempVec);
-        const frontOpacity = frontFacingDot > -0.15 ? 1.0 : 0.42;
-        projectToScreen(tempVec, labelFrontEl, frontOpacity);
-
-        // 3. Back Label: anchored on the opposite edge of the Back face
-        tempVec.set(-halfW - 0.35, -0.22, -halfT - 0.04);
-        floatGroup.localToWorld(tempVec);
-        const backOpacity = frontFacingDot < 0.15 ? 1.0 : 0.42;
-        projectToScreen(tempVec, labelBackEl, backOpacity);
-      }
-
-      function projectToScreen(worldVec, domEl, alpha) {
-        const projected = worldVec.clone().project(camera);
-        const x = (projected.x * 0.5 + 0.5) * window.innerWidth;
-        const y = (-projected.y * 0.5 + 0.5) * window.innerHeight;
-
-        domEl.style.transform = `translate(-50%, -50%) translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
-        domEl.style.opacity = String(alpha);
-      }
-
-      /* ==========================================================================
-         10. STANDALONE CLIENT VERSION HTML EXPORT (Base64 + >3MB JPEG Compression)
-         ========================================================================== */
-      async function compressDataUrlIfNeeded(dataUrl) {
-        if (!dataUrl) return null;
-        // Approximate byte size of base64 payload
-        const base64Length = dataUrl.length - (dataUrl.indexOf(',') + 1);
-        const sizeInBytes = (base64Length * 3) / 4;
-        const threeMB = 3 * 1024 * 1024;
-
-        if (sizeInBytes <= threeMB) {
-          return dataUrl;
-        }
-
-        // Compress to JPEG ~0.92 quality
-        return new Promise((resolve) => {
-          const img = new Image();
-          img.onload = function () {
-            const canvas = document.createElement('canvas');
-            const maxDim = 2600;
-            let w = img.naturalWidth || img.width;
-            let h = img.naturalHeight || img.height;
-            if (Math.max(w, h) > maxDim) {
-              const scale = maxDim / Math.max(w, h);
-              w = Math.round(w * scale);
-              h = Math.round(h * scale);
-            }
-            canvas.width = w;
-            canvas.height = h;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(0, 0, w, h);
-            ctx.drawImage(img, 0, 0, w, h);
-            resolve(canvas.toDataURL('image/jpeg', 0.92));
+          const extrudeSettings = {
+            depth: T,
+            bevelEnabled: true,
+            bevelSegments: 2,
+            steps: 1,
+            bevelSize: 0.0025,
+            bevelThickness: 0.0025,
+            curveSegments: 48
           };
+
+          const rawGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+          // Center geometry in Z so Front is +T/2 and Back is -T/2
+          rawGeo.translate(0, 0, -T / 2);
+
+          // Rebuild BufferGeometry into 3 distinct material groups:
+          // 0: Front Face (+Z), 1: Back Face (-Z), 2: Paper White Edge (Side walls & bevels)
+          // And compute normalized [0..1] planar UVs with mirrored U on the Back face so text is never reversed
+          const posAttr = rawGeo.attributes.position;
+          const normAttr = rawGeo.attributes.normal;
+          const vertexCount = posAttr.count;
+
+          const frontPositions = [];
+          const frontNormals = [];
+          const frontUVs = [];
+
+          const backPositions = [];
+          const backNormals = [];
+          const backUVs = [];
+
+          const edgePositions = [];
+          const edgeNormals = [];
+          const edgeUVs = [];
+
+          for (let i = 0; i < vertexCount; i += 3) {
+            // Determine triangle orientation using average Z normal
+            const nz = (normAttr.getZ(i) + normAttr.getZ(i + 1) + normAttr.getZ(i + 2)) / 3;
+
+            for (let k = 0; k < 3; k++) {
+              const idx = i + k;
+              const vx = posAttr.getX(idx);
+              const vy = posAttr.getY(idx);
+              const vz = posAttr.getZ(idx);
+
+              const nx = normAttr.getX(idx);
+              const ny = normAttr.getY(idx);
+              const vnZ = normAttr.getZ(idx);
+
+              if (nz > 0.85) {
+                // Front Face (+Z): standard left-to-right [0..1] UVs
+                frontPositions.push(vx, vy, vz);
+                frontNormals.push(nx, ny, vnZ);
+                const u = (vx + W / 2) / W;
+                const v = (vy + H / 2) / H;
+                frontUVs.push(u, v);
+              } else if (nz < -0.85) {
+                // Back Face (-Z): mirror U horizontally so when flipped 180° around Y, text reads left-to-right
+                backPositions.push(vx, vy, vz);
+                backNormals.push(nx, ny, vnZ);
+                const u = (W / 2 - vx) / W;
+                const v = (vy + H / 2) / H;
+                backUVs.push(u, v);
+              } else {
+                // Paper Edge (side walls & die-cut hole walls)
+                edgePositions.push(vx, vy, vz);
+                edgeNormals.push(nx, ny, vnZ);
+                edgeUVs.push(0.5, 0.5);
+              }
+            }
+          }
+
+          rawGeo.dispose();
+
+          const finalGeo = new THREE.BufferGeometry();
+          const allPositions = new Float32Array(
+            frontPositions.length + backPositions.length + edgePositions.length
+          );
+          allPositions.set(frontPositions, 0);
+          allPositions.set(backPositions, frontPositions.length);
+          allPositions.set(edgePositions, frontPositions.length + backPositions.length);
+
+          const allNormals = new Float32Array(
+            frontNormals.length + backNormals.length + edgeNormals.length
+          );
+          allNormals.set(frontNormals, 0);
+          allNormals.set(backNormals, frontNormals.length);
+          allNormals.set(edgeNormals, frontNormals.length + backNormals.length);
+
+          const allUVs = new Float32Array(
+            frontUVs.length + backUVs.length + edgeUVs.length
+          );
+          allUVs.set(frontUVs, 0);
+          allUVs.set(backUVs, frontUVs.length);
+          allUVs.set(edgeUVs, frontUVs.length + backUVs.length);
+
+          finalGeo.setAttribute('position', new THREE.BufferAttribute(allPositions, 3));
+          finalGeo.setAttribute('normal', new THREE.BufferAttribute(allNormals, 3));
+          finalGeo.setAttribute('uv', new THREE.BufferAttribute(allUVs, 2));
+
+          const frontVertCount = frontPositions.length / 3;
+          const backVertCount = backPositions.length / 3;
+          const edgeVertCount = edgePositions.length / 3;
+
+          finalGeo.addGroup(0, frontVertCount, 0);
+          finalGeo.addGroup(frontVertCount, backVertCount, 1);
+          finalGeo.addGroup(frontVertCount + backVertCount, edgeVertCount, 2);
+
+          finalGeo.computeBoundingSphere();
+          return finalGeo;
+        }
+
+        /**
+         * Builds a single extruded panel geometry for Bi-Fold / Tri-Fold brochures
+         * with UVs mapped to a horizontal slice [uStart .. uEnd] of the full spread texture.
+         */
+        function buildFoldPanelGeometry(panelWidth, panelHeight, thickness, uStart, uEnd, originOffsetX) {
+          const shape = createRoundedRectShape(panelWidth, panelHeight, 0.015);
+          const extrudeSettings = {
+            depth: thickness,
+            bevelEnabled: true,
+            bevelSegments: 2,
+            steps: 1,
+            bevelSize: 0.002,
+            bevelThickness: 0.002,
+            curveSegments: 16
+          };
+
+          const rawGeo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+          rawGeo.translate(originOffsetX, 0, -thickness / 2);
+
+          const posAttr = rawGeo.attributes.position;
+          const normAttr = rawGeo.attributes.normal;
+          const vertexCount = posAttr.count;
+
+          const frontPositions = [];
+          const frontNormals = [];
+          const frontUVs = [];
+
+          const backPositions = [];
+          const backNormals = [];
+          const backUVs = [];
+
+          const edgePositions = [];
+          const edgeNormals = [];
+          const edgeUVs = [];
+
+          const minX = originOffsetX - panelWidth / 2;
+
+          for (let i = 0; i < vertexCount; i += 3) {
+            const nz = (normAttr.getZ(i) + normAttr.getZ(i + 1) + normAttr.getZ(i + 2)) / 3;
+
+            for (let k = 0; k < 3; k++) {
+              const idx = i + k;
+              const vx = posAttr.getX(idx);
+              const vy = posAttr.getY(idx);
+              const vz = posAttr.getZ(idx);
+
+              const nx = normAttr.getX(idx);
+              const ny = normAttr.getY(idx);
+              const vnZ = normAttr.getZ(idx);
+
+              const localT = (vx - minX) / panelWidth; // 0..1 across this panel
+              const v = (vy + panelHeight / 2) / panelHeight;
+
+              if (nz > 0.85) {
+                // Front Face (+Z = Outside Spread)
+                frontPositions.push(vx, vy, vz);
+                frontNormals.push(nx, ny, vnZ);
+                const u = uStart + localT * (uEnd - uStart);
+                frontUVs.push(u, v);
+              } else if (nz < -0.85) {
+                // Back Face (-Z = Inside Spread, mirrored horizontally so when viewed from -Z it reads left-to-right)
+                backPositions.push(vx, vy, vz);
+                backNormals.push(nx, ny, vnZ);
+                const backUStart = 1.0 - uEnd;
+                const backUEnd = 1.0 - uStart;
+                const u = backUEnd - localT * (backUEnd - backUStart);
+                backUVs.push(u, v);
+              } else {
+                edgePositions.push(vx, vy, vz);
+                edgeNormals.push(nx, ny, vnZ);
+                edgeUVs.push(0.5, 0.5);
+              }
+            }
+          }
+
+          rawGeo.dispose();
+
+          const finalGeo = new THREE.BufferGeometry();
+          const allPositions = new Float32Array(
+            frontPositions.length + backPositions.length + edgePositions.length
+          );
+          allPositions.set(frontPositions, 0);
+          allPositions.set(backPositions, frontPositions.length);
+          allPositions.set(edgePositions, frontPositions.length + backPositions.length);
+
+          const allNormals = new Float32Array(
+            frontNormals.length + backNormals.length + edgeNormals.length
+          );
+          allNormals.set(frontNormals, 0);
+          allNormals.set(backNormals, frontNormals.length);
+          allNormals.set(edgeNormals, frontNormals.length + backNormals.length);
+
+          const allUVs = new Float32Array(
+            frontUVs.length + backUVs.length + edgeUVs.length
+          );
+          allUVs.set(frontUVs, 0);
+          allUVs.set(backUVs, frontUVs.length);
+          allUVs.set(edgeUVs, frontUVs.length + backUVs.length);
+
+          finalGeo.setAttribute('position', new THREE.BufferAttribute(allPositions, 3));
+          finalGeo.setAttribute('normal', new THREE.BufferAttribute(allNormals, 3));
+          finalGeo.setAttribute('uv', new THREE.BufferAttribute(allUVs, 2));
+
+          const frontVertCount = frontPositions.length / 3;
+          const backVertCount = backPositions.length / 3;
+          const edgeVertCount = edgePositions.length / 3;
+
+          finalGeo.addGroup(0, frontVertCount, 0);
+          finalGeo.addGroup(frontVertCount, backVertCount, 1);
+          finalGeo.addGroup(frontVertCount + backVertCount, edgeVertCount, 2);
+
+          finalGeo.computeBoundingSphere();
+          return finalGeo;
+        }
+
+        /**
+         * Creates an articulated 3D hierarchy for Bi-Fold (2 hinged panels) or Tri-Fold (3 hinged panels)
+         */
+        function createArticulatedFoldGroup(productKey, materialsArray) {
+          const dims = getProductDimensions(productKey);
+          const W = dims.width;
+          const H = dims.height;
+          const T = dims.thickness;
+
+          const container = new THREE.Group();
+
+          if (productKey === 'bifold') {
+            const panelW = W / 2;
+            // Left panel hinged at x = 0 (extends from -panelW to 0)
+            const leftGeo = buildFoldPanelGeometry(panelW, H, T, 0.0, 0.5, -panelW / 2);
+            // Right panel hinged at x = 0 (extends from 0 to +panelW)
+            const rightGeo = buildFoldPanelGeometry(panelW, H, T, 0.5, 1.0, panelW / 2);
+            activeFoldCleanupGeometries.push(leftGeo, rightGeo);
+
+            const leftHinge = new THREE.Group();
+            const rightHinge = new THREE.Group();
+
+            const leftMesh = new THREE.Mesh(leftGeo, materialsArray);
+            const rightMesh = new THREE.Mesh(rightGeo, materialsArray);
+
+            leftHinge.add(leftMesh);
+            rightHinge.add(rightMesh);
+            container.add(leftHinge, rightHinge);
+
+            container.userData.rig = { type: 'bifold', leftHinge, rightHinge, thickness: T };
+          } else {
+            // Tri-fold: 3 panels of width W / 3
+            const panelW = W / 3;
+            // Left panel (u: 0..1/3) attached to leftHinge at x = -panelW / 2, extends to the left (-panelW to 0 in hinge space)
+            const leftGeo = buildFoldPanelGeometry(panelW, H, T, 0.0, 1 / 3, -panelW / 2);
+            // Center panel (u: 1/3..2/3) centered at x = 0
+            const centerGeo = buildFoldPanelGeometry(panelW, H, T, 1 / 3, 2 / 3, 0);
+            // Right panel (u: 2/3..1.0) attached to rightHinge at x = +panelW / 2, extends to the right (0 to +panelW in hinge space)
+            const rightGeo = buildFoldPanelGeometry(panelW, H, T, 2 / 3, 1.0, panelW / 2);
+            activeFoldCleanupGeometries.push(leftGeo, centerGeo, rightGeo);
+
+            const centerMesh = new THREE.Mesh(centerGeo, materialsArray);
+            const leftHinge = new THREE.Group();
+            leftHinge.position.set(-panelW / 2, 0, 0);
+            leftHinge.add(new THREE.Mesh(leftGeo, materialsArray));
+
+            const rightHinge = new THREE.Group();
+            rightHinge.position.set(panelW / 2, 0, 0);
+            rightHinge.add(new THREE.Mesh(rightGeo, materialsArray));
+
+            container.add(centerMesh, leftHinge, rightHinge);
+            container.userData.rig = { type: 'trifold', leftHinge, rightHinge, thickness: T };
+          }
+
+          return container;
+        }
+
+        function applyFoldArticulation(rigData) {
+          if (!rigData) return;
+          const prod = state.products[state.activeProduct];
+          const pct = Math.max(0, Math.min(100, Number(prod.foldPercent) || 0)) / 100;
+
+          if (rigData.type === 'bifold') {
+            // Fold both halves symmetrically toward -Z (Inside faces each other, Outside cover on the exterior)
+            const maxHalfAngle = (Math.PI / 2) * 0.985;
+            const angle = pct * maxHalfAngle;
+            rigData.leftHinge.rotation.y = -angle;
+            rigData.rightHinge.rotation.y = angle;
+            // Subtle Z offset when nearly closed to avoid coplanar overlap
+            rigData.rightHinge.position.z = pct * rigData.thickness * 0.6;
+          } else if (rigData.type === 'trifold') {
+            const maxFoldAngle = Math.PI * 0.982;
+            const isZ = state.products.trifold.foldStyle === 'zfold';
+            if (isZ) {
+              // Accordion Z-Fold: left panel folds toward +Z, right panel folds toward -Z
+              const angle = pct * maxFoldAngle;
+              rigData.leftHinge.rotation.y = angle;
+              rigData.rightHinge.rotation.y = angle;
+              rigData.leftHinge.position.z = pct * rigData.thickness * 1.1;
+              rigData.rightHinge.position.z = -pct * rigData.thickness * 1.1;
+            } else {
+              // Standard Roll (C-Fold): left inner flap folds in first toward -Z, right front cover folds over it
+              const leftAngle = Math.min(1, pct * 1.12) * maxFoldAngle;
+              const rightAngle = Math.pow(pct, 1.08) * maxFoldAngle;
+              rigData.leftHinge.rotation.y = -leftAngle;
+              rigData.rightHinge.rotation.y = rightAngle;
+              rigData.leftHinge.position.z = -pct * rigData.thickness * 0.85;
+              rigData.rightHinge.position.z = -pct * rigData.thickness * 2.1;
+            }
+          }
+        }
+
+        function updateFoldAnglesInScene() {
+          if (mainFoldRig) applyFoldArticulation(mainFoldRig);
+          if (reflFoldRig) applyFoldArticulation(reflFoldRig);
+          labelsDirty = true;
+        }
+
+        /* ==========================================================================
+           6. TEXTURE COVER/CROP-TO-FIT & MATERIAL UPDATER
+           ========================================================================== */
+        function applyCoverCropToTexture(texture, imgW, imgH, targetW, targetH) {
+          if (!texture || !imgW || !imgH) return;
+          const imgAspect = imgW / imgH;
+          const targetAspect = targetW / targetH;
+
+          texture.wrapS = THREE.ClampToEdgeWrapping;
+          texture.wrapT = THREE.ClampToEdgeWrapping;
+
+          if (imgAspect > targetAspect) {
+            // Image is wider than target: crop horizontally
+            const repeatX = targetAspect / imgAspect;
+            texture.repeat.set(repeatX, 1);
+            texture.offset.set((1 - repeatX) / 2, 0);
+          } else {
+            // Image is taller than target: crop vertically
+            const repeatY = imgAspect / targetAspect;
+            texture.repeat.set(1, repeatY);
+            texture.offset.set(0, (1 - repeatY) / 2);
+          }
+          texture.needsUpdate = true;
+        }
+
+        function updateFinishProperties() {
+          const prod = state.products[state.activeProduct];
+          const preset = FINISH_PRESETS[prod.finish] || FINISH_PRESETS.glossUV;
+
+          [frontMaterial, backMaterial].forEach((mat) => {
+            mat.roughness = preset.roughness;
+            mat.clearcoat = preset.clearcoat;
+            mat.clearcoatRoughness = preset.clearcoatRoughness;
+            mat.reflectivity = preset.reflectivity;
+            mat.envMapIntensity = preset.envMapIntensity;
+            mat.needsUpdate = true;
+          });
+        }
+
+        function updateProductTextures() {
+          const prodKey = state.activeProduct;
+          const prod = state.products[prodKey];
+          const dims = getProductDimensions(prodKey);
+
+          // Dispose previous placeholder textures to prevent memory leaks
+          if (placeholderFrontTex) {
+            placeholderFrontTex.dispose();
+            placeholderFrontTex = null;
+          }
+          if (placeholderBackTex) {
+            placeholderBackTex.dispose();
+            placeholderBackTex = null;
+          }
+
+          // Front Texture
+          if (prod.front.texture) {
+            applyCoverCropToTexture(
+              prod.front.texture,
+              prod.front.width,
+              prod.front.height,
+              dims.width,
+              dims.height
+            );
+            frontMaterial.map = prod.front.texture;
+            reflFrontMat.map = prod.front.texture;
+          } else {
+            placeholderFrontTex = createPlaceholderTexture('FRONT', prodKey);
+            frontMaterial.map = placeholderFrontTex;
+            reflFrontMat.map = placeholderFrontTex;
+          }
+
+          // Back Texture
+          if (prod.back.texture) {
+            applyCoverCropToTexture(
+              prod.back.texture,
+              prod.back.width,
+              prod.back.height,
+              dims.width,
+              dims.height
+            );
+            backMaterial.map = prod.back.texture;
+            reflBackMat.map = prod.back.texture;
+          } else {
+            placeholderBackTex = createPlaceholderTexture('BACK', prodKey);
+            backMaterial.map = placeholderBackTex;
+            reflBackMat.map = placeholderBackTex;
+          }
+
+          frontMaterial.needsUpdate = true;
+          backMaterial.needsUpdate = true;
+          reflFrontMat.needsUpdate = true;
+          reflBackMat.needsUpdate = true;
+
+          updateAspectWarnings();
+        }
+
+        function rebuildActiveMesh() {
+          if (mainPieceMesh) {
+            if (mainPieceMesh.geometry) mainPieceMesh.geometry.dispose();
+            floatGroup.remove(mainPieceMesh);
+            mainPieceMesh = null;
+          }
+          if (reflectionPieceMesh) {
+            reflectionPivot.remove(reflectionPieceMesh);
+            reflectionPieceMesh = null;
+          }
+          if (activeFoldCleanupGeometries.length > 0) {
+            activeFoldCleanupGeometries.forEach((g) => g.dispose());
+            activeFoldCleanupGeometries = [];
+          }
+          mainFoldRig = null;
+          reflFoldRig = null;
+
+          const mainMats = [frontMaterial, backMaterial, edgeMaterial];
+          const reflMats = [reflFrontMat, reflBackMat, reflEdgeMat];
+
+          if (isFoldedProduct(state.activeProduct)) {
+            mainPieceMesh = createArticulatedFoldGroup(state.activeProduct, mainMats);
+            reflectionPieceMesh = createArticulatedFoldGroup(state.activeProduct, reflMats);
+            mainFoldRig = mainPieceMesh.userData.rig;
+            reflFoldRig = reflectionPieceMesh.userData.rig;
+            floatGroup.add(mainPieceMesh);
+            reflectionPivot.add(reflectionPieceMesh);
+            updateFoldAnglesInScene();
+          } else {
+            const geometry = buildProductGeometry(state.activeProduct);
+            mainPieceMesh = new THREE.Mesh(geometry, mainMats);
+            floatGroup.add(mainPieceMesh);
+
+            // Mirrored floor reflection mesh sharing the same geometry
+            reflectionPieceMesh = new THREE.Mesh(geometry, reflMats);
+            reflectionPivot.add(reflectionPieceMesh);
+          }
+
+          // Update floor level and contact shadow scale for the product's physical dimensions
+          const dims = getProductDimensions(state.activeProduct);
+          currentFloorY = -(dims.height / 2 + 0.34);
+
+          floorFadePlane.position.y = currentFloorY;
+          contactShadowMesh.position.y = currentFloorY + 0.002;
+          const effectiveSpanW = isFoldedProduct(state.activeProduct)
+            ? dims.foldedWidth + (dims.width - dims.foldedWidth) * (1 - (state.products[state.activeProduct].foldPercent || 0) / 100)
+            : dims.width;
+          contactShadowMesh.scale.set(effectiveSpanW * 1.4, Math.max(dims.foldedWidth, 2.2) * 0.65, 1);
+
+          // Position mirror reflection plane at y = 2 * currentFloorY with inverted Y scale
+          reflectionRoot.position.set(0, currentFloorY * 2, 0);
+          reflectionRoot.scale.set(1, -1, 1);
+
+          updateFinishProperties();
+          updateProductTextures();
+          updateTopbarSpecs();
+          labelsDirty = true;
+        }
+
+        /* ==========================================================================
+           7. SMOOTH CAMERA & PIECE ANIMATION SYSTEM (~0.8s Ease-In-Out)
+           ========================================================================== */
+        let activeTween = null;
+        let scaleTransition = null;
+
+        function easeInOutCubic(t) {
+          return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+        }
+
+        function getIdealCameraDistance(productKey) {
+          const dims = getProductDimensions(productKey);
+          const maxDim = Math.max(dims.width, dims.height);
+          const isMobile = window.innerWidth <= 820;
+          const baseFactor = isMobile ? 1.85 : 1.52;
+          return Math.max(5.2, maxDim * baseFactor);
+        }
+
+        function animateToView(viewMode, durationMs = 800) {
+          state.activeView = viewMode;
+          updateViewButtonsUI();
+
+          const dist = getIdealCameraDistance(state.activeProduct);
+          const startCamPos = camera.position.clone();
+          const startTarget = controls.target.clone();
+          const startRotX = piecePivot.rotation.x;
+          const startRotY = piecePivot.rotation.y;
+          const startRotZ = piecePivot.rotation.z;
+
+          let endRotX = 0;
+          let endRotY = 0;
+          let endRotZ = 0;
+          const endCamPos = new THREE.Vector3(0, 0.12, dist);
+          const endTarget = new THREE.Vector3(0, -0.1, 0);
+
+          // Normalize current Y rotation to [-PI, PI] for shortest path
+          const normStartY = Math.atan2(Math.sin(startRotY), Math.cos(startRotY));
+
+          if (viewMode === 'front') {
+            endRotX = 0;
+            endRotY = 0;
+            endRotZ = 0;
+          } else if (viewMode === 'back') {
+            endRotX = 0;
+            endRotY = normStartY < 0 ? -Math.PI : Math.PI;
+            endRotZ = 0;
+          } else {
+            // 'cover' angled hero view
+            endRotX = -0.09;
+            endRotY = -0.34;
+            endRotZ = 0.02;
+            endCamPos.set(0.35, 0.42, dist * 0.96);
+          }
+
+          activeTween = {
+            startTime: performance.now(),
+            duration: prefersReducedMotion ? 1 : durationMs,
+            startCamPos,
+            endCamPos,
+            startTarget,
+            endTarget,
+            startRotX,
+            startRotY: normStartY,
+            startRotZ,
+            endRotX,
+            endRotY,
+            endRotZ
+          };
+        }
+
+        function flipPieceSmoothly() {
+          state.autoRotate = false;
+          syncAutoRotateUI();
+
+          const normY = Math.atan2(Math.sin(piecePivot.rotation.y), Math.cos(piecePivot.rotation.y));
+          const isShowingBack = Math.abs(normY) > Math.PI * 0.5;
+          animateToView(isShowingBack ? 'front' : 'back', 800);
+        }
+
+        function switchProductWithTransition(newProductKey) {
+          if (newProductKey === state.activeProduct) return;
+
+          const startTime = performance.now();
+          const halfDuration = prefersReducedMotion ? 1 : 190;
+
+          scaleTransition = {
+            phase: 'out',
+            startTime,
+            halfDuration,
+            onMidpoint: () => {
+              state.activeProduct = newProductKey;
+              syncProductUI();
+              rebuildActiveMesh();
+              animateToView(state.activeView, 650);
+            }
+          };
+        }
+
+        /* ==========================================================================
+           8. ARTWORK UPLOAD, ASPECT RATIO CHECK (<3%) & THUMBNAIL HANDLING
+           ========================================================================== */
+        const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+
+        function updateAspectWarnings() {
+          const prodKey = state.activeProduct;
+          const prod = state.products[prodKey];
+          const dims = getProductDimensions(prodKey);
+          const targetAspect = dims.width / dims.height;
+
+          ['front', 'back'].forEach((side) => {
+            const warnEl = document.getElementById(`warning-${side}`);
+            const slot = prod[side];
+            if (!warnEl) return;
+
+            if (slot && slot.dataUrl && slot.width && slot.height) {
+              const imgAspect = slot.width / slot.height;
+              const diffRatio = Math.abs(imgAspect - targetAspect) / targetAspect;
+
+              if (diffRatio > 0.03) {
+                const pct = Math.round(diffRatio * 100);
+                warnEl.textContent = `Aspect ratio differs by ${pct}%. Auto-cropped to fit. Recommended: ${dims.recPxText}.`;
+                warnEl.classList.add('visible');
+              } else {
+                warnEl.classList.remove('visible');
+                warnEl.textContent = '';
+              }
+            } else {
+              warnEl.classList.remove('visible');
+              warnEl.textContent = '';
+            }
+          });
+        }
+
+        function loadArtworkFromDataUrl(productKey, side, dataUrl, onReady, existingToken, origDimensions) {
+          const prod = state.products[productKey];
+          const slot = prod[side];
+          const token =
+            typeof existingToken === 'number'
+              ? existingToken
+              : (slot.loadToken = (slot.loadToken || 0) + 1);
+
+          const img = new Image();
           img.onerror = function () {
-            resolve(dataUrl);
+            if (slot.loadToken !== token) return;
+            showToast('This image could not be loaded. Try another file.');
+          };
+          img.onload = function () {
+            if (slot.loadToken !== token) return;
+
+            const origW = (origDimensions && origDimensions.width) || img.naturalWidth || img.width;
+            const origH = (origDimensions && origDimensions.height) || img.naturalHeight || img.height;
+
+            const maxAllowed = Math.min(4096, renderer.capabilities.maxTextureSize || 4096);
+            const curW = img.naturalWidth || img.width;
+            const curH = img.naturalHeight || img.height;
+            const maxSide = Math.max(curW, curH);
+
+            if (maxSide > maxAllowed) {
+              const scale = maxAllowed / maxSide;
+              const targetW = Math.max(1, Math.round(curW * scale));
+              const targetH = Math.max(1, Math.round(curH * scale));
+              const resizeCanvas = document.createElement('canvas');
+              resizeCanvas.width = targetW;
+              resizeCanvas.height = targetH;
+              const rCtx = resizeCanvas.getContext('2d');
+              rCtx.drawImage(img, 0, 0, targetW, targetH);
+
+              const hasAlpha = detectCanvasAlpha(rCtx, targetW, targetH, dataUrl);
+              let resizedDataUrl;
+              if (hasAlpha) {
+                resizedDataUrl = resizeCanvas.toDataURL('image/png');
+              } else {
+                resizedDataUrl = encodeOpaqueCanvasWithFallback(resizeCanvas, 0.92);
+              }
+
+              loadArtworkFromDataUrl(
+                productKey,
+                side,
+                resizedDataUrl,
+                onReady,
+                token,
+                { width: origW, height: origH }
+              );
+              return;
+            }
+
+            if (slot.texture) {
+              slot.texture.dispose();
+            }
+
+            const tex = new THREE.Texture(img);
+            tex.encoding = THREE.sRGBEncoding;
+            tex.anisotropy = maxAnisotropy;
+            tex.minFilter = THREE.LinearMipmapLinearFilter;
+            tex.magFilter = THREE.LinearFilter;
+            tex.generateMipmaps = true;
+            tex.needsUpdate = true;
+
+            slot.dataUrl = dataUrl;
+            slot.width = origW;
+            slot.height = origH;
+            slot.texture = tex;
+
+            if (productKey === state.activeProduct) {
+              updateProductTextures();
+              syncUploadCardsUI();
+            }
+            if (onReady) onReady();
           };
           img.src = dataUrl;
-        });
-      }
+        }
 
-      async function exportClientVersionHtml() {
-        const exportBtn = document.getElementById('btn-export-client');
-        const exportLabel = document.getElementById('export-btn-label');
-        if (exportBtn) exportBtn.disabled = true;
-        if (exportLabel) exportLabel.textContent = 'Preparing client file...';
+        function handleFileSelect(side, file) {
+          if (!file) return;
+          const validTypes = ['image/png', 'image/jpeg', 'image/webp'];
+          if (!validTypes.includes(file.type)) {
+            showToast('Please upload a PNG, JPG, or WEBP image.');
+            return;
+          }
 
-        try {
-          const bc = state.products.businessCard;
-          const dh = state.products.doorHanger;
-          const c34 = state.products.card3x4;
-          const bf = state.products.bifold;
-          const tf = state.products.trifold;
+          if (file.size > MAX_UPLOAD_BYTES) {
+            showToast('File size exceeds the 25 MB limit. Please choose a smaller image.');
+            return;
+          }
 
-          const [
-            bcFront, bcBack,
-            dhFront, dhBack,
-            c34Front, c34Back,
-            bfFront, bfBack,
-            tfFront, tfBack
-          ] = await Promise.all([
-            compressDataUrlIfNeeded(bc.front.dataUrl),
-            compressDataUrlIfNeeded(bc.back.dataUrl),
-            compressDataUrlIfNeeded(dh.front.dataUrl),
-            compressDataUrlIfNeeded(dh.back.dataUrl),
-            compressDataUrlIfNeeded(c34.front.dataUrl),
-            compressDataUrlIfNeeded(c34.back.dataUrl),
-            compressDataUrlIfNeeded(bf.front.dataUrl),
-            compressDataUrlIfNeeded(bf.back.dataUrl),
-            compressDataUrlIfNeeded(tf.front.dataUrl),
-            compressDataUrlIfNeeded(tf.back.dataUrl)
-          ]);
+          const targetProductKey = state.activeProduct;
+          const slot = state.products[targetProductKey][side];
+          const token = (slot.loadToken = (slot.loadToken || 0) + 1);
 
-          const clientNameInput = document.getElementById('client-project-input');
-          const clientTitle = (clientNameInput && clientNameInput.value.trim()) || 'Print Mockup Proof';
-
-          const exportConfig = {
-            clientName: clientTitle,
-            activeProduct: state.activeProduct,
-            lightBackground: state.lightBackground,
-            autoRotate: state.autoRotate,
-            products: {
-              businessCard: {
-                orientation: bc.orientation,
-                finish: bc.finish,
-                frontDataUrl: bcFront,
-                backDataUrl: bcBack,
-                hasImages: Boolean(bcFront || bcBack)
+          const reader = new FileReader();
+          reader.onerror = function () {
+            if (slot.loadToken !== token) return;
+            showToast('This image could not be loaded. Try another file.');
+          };
+          reader.onload = function (e) {
+            if (slot.loadToken !== token) return;
+            const dataUrl = e.target.result;
+            loadArtworkFromDataUrl(
+              targetProductKey,
+              side,
+              dataUrl,
+              () => {
+                if (targetProductKey === state.activeProduct) {
+                  animateToView(side, 750);
+                }
               },
-              doorHanger: {
-                showDieCut: dh.showDieCut,
-                finish: dh.finish,
-                frontDataUrl: dhFront,
-                backDataUrl: dhBack,
-                hasImages: Boolean(dhFront || dhBack)
-              },
-              card3x4: {
-                orientation: c34.orientation,
-                finish: c34.finish,
-                frontDataUrl: c34Front,
-                backDataUrl: c34Back,
-                hasImages: Boolean(c34Front || c34Back)
-              },
-              bifold: {
-                width: bf.width,
-                height: bf.height,
-                foldPercent: bf.foldPercent,
-                finish: bf.finish,
-                frontDataUrl: bfFront,
-                backDataUrl: bfBack,
-                hasImages: Boolean(bfFront || bfBack)
-              },
-              trifold: {
-                width: tf.width,
-                height: tf.height,
-                foldPercent: tf.foldPercent,
-                foldStyle: tf.foldStyle,
-                finish: tf.finish,
-                frontDataUrl: tfFront,
-                backDataUrl: tfBack,
-                hasImages: Boolean(tfFront || tfBack)
+              token
+            );
+          };
+          reader.readAsDataURL(file);
+        }
+
+        function removeArtwork(side) {
+          const prod = state.products[state.activeProduct];
+          const slot = prod[side];
+          slot.loadToken = (slot.loadToken || 0) + 1;
+
+          if (slot.texture) {
+            slot.texture.dispose();
+            slot.texture = null;
+          }
+          slot.dataUrl = null;
+          slot.width = 0;
+          slot.height = 0;
+
+          const fileInput = document.getElementById(`file-input-${side}`);
+          if (fileInput) fileInput.value = '';
+
+          updateProductTextures();
+          syncUploadCardsUI();
+        }
+
+        /* ==========================================================================
+           9. FLOATING 3D LABELS PROJECTION (Zero per-frame allocations)
+           ========================================================================== */
+        const labelCoverEl = document.getElementById('label-cover');
+        const labelFrontEl = document.getElementById('label-front');
+        const labelBackEl = document.getElementById('label-back');
+        const tempVec = new THREE.Vector3();
+        const tempNormal = new THREE.Vector3();
+        const tempCamDir = new THREE.Vector3();
+        const tempProjected = new THREE.Vector3();
+
+        const lastCamPos = new THREE.Vector3();
+        const lastCamQuat = new THREE.Quaternion();
+        const lastPivotRot = new THREE.Euler();
+        let lastStageScale = 1;
+
+        function hasSceneViewChanged() {
+          if (labelsDirty || activeTween || state.autoRotate || scaleTransition) {
+            return true;
+          }
+          if (lastCamPos.distanceToSquared(camera.position) > 1e-7) return true;
+          if (1 - Math.abs(lastCamQuat.dot(camera.quaternion)) > 1e-7) return true;
+          if (
+            Math.abs(lastPivotRot.x - piecePivot.rotation.x) > 1e-6 ||
+            Math.abs(lastPivotRot.y - piecePivot.rotation.y) > 1e-6 ||
+            Math.abs(lastPivotRot.z - piecePivot.rotation.z) > 1e-6
+          ) {
+            return true;
+          }
+          if (Math.abs(lastStageScale - rootStage.scale.x) > 1e-6) return true;
+          return false;
+        }
+
+        function recordSceneViewState() {
+          lastCamPos.copy(camera.position);
+          lastCamQuat.copy(camera.quaternion);
+          lastPivotRot.copy(piecePivot.rotation);
+          lastStageScale = rootStage.scale.x;
+          labelsDirty = false;
+        }
+
+        function updateFloating3DLabels() {
+          if (state.isClientMode || !state.showLabels || state.presentationMode || !mainPieceMesh) {
+            return;
+          }
+
+          const dims = getProductDimensions(state.activeProduct);
+          const halfW = dims.width / 2;
+          const halfH = dims.height / 2;
+          const halfT = dims.thickness / 2;
+
+          // 1. Cover Label: anchored above the top-left corner of the piece
+          tempVec.set(-halfW * 0.72, halfH + 0.28, 0);
+          floatGroup.localToWorld(tempVec);
+          projectToScreen(tempVec, labelCoverEl, 1.0);
+
+          // Compute world normal of the Front face (+Z in floatGroup local space)
+          tempNormal.set(0, 0, 1).applyQuaternion(piecePivot.quaternion);
+          tempCamDir.copy(camera.position).sub(controls.target).normalize();
+          const frontFacingDot = tempNormal.dot(tempCamDir);
+
+          // 2. Front Label: anchored on the right edge of the Front face
+          tempVec.set(halfW + 0.35, 0.15, halfT + 0.04);
+          floatGroup.localToWorld(tempVec);
+          const frontOpacity = frontFacingDot > -0.15 ? 1.0 : 0.42;
+          projectToScreen(tempVec, labelFrontEl, frontOpacity);
+
+          // 3. Back Label: anchored on the opposite edge of the Back face
+          tempVec.set(-halfW - 0.35, -0.22, -halfT - 0.04);
+          floatGroup.localToWorld(tempVec);
+          const backOpacity = frontFacingDot < 0.15 ? 1.0 : 0.42;
+          projectToScreen(tempVec, labelBackEl, backOpacity);
+        }
+
+        function projectToScreen(worldVec, domEl, alpha) {
+          tempProjected.copy(worldVec).project(camera);
+          const x = (tempProjected.x * 0.5 + 0.5) * window.innerWidth;
+          const y = (-tempProjected.y * 0.5 + 0.5) * window.innerHeight;
+
+          domEl.style.transform = `translate(-50%, -50%) translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0)`;
+          domEl.style.opacity = String(alpha);
+        }
+
+        /* ==========================================================================
+           10. STANDALONE CLIENT VERSION HTML EXPORT (Always compressed <=2400px, WebP/JPEG 0.88 or PNG)
+           ========================================================================== */
+        async function compressDataUrlIfNeeded(dataUrl) {
+          if (!dataUrl) return null;
+
+          return new Promise((resolve) => {
+            const img = new Image();
+            img.onload = function () {
+              const maxDim = 2400;
+              let w = img.naturalWidth || img.width;
+              let h = img.naturalHeight || img.height;
+              if (Math.max(w, h) > maxDim) {
+                const scale = maxDim / Math.max(w, h);
+                w = Math.max(1, Math.round(w * scale));
+                h = Math.max(1, Math.round(h * scale));
+              }
+              const canvas = document.createElement('canvas');
+              canvas.width = w;
+              canvas.height = h;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(img, 0, 0, w, h);
+
+              const hasAlpha = detectCanvasAlpha(ctx, w, h, dataUrl);
+              if (hasAlpha) {
+                resolve(canvas.toDataURL('image/png'));
+              } else {
+                resolve(encodeOpaqueCanvasWithFallback(canvas, 0.88));
+              }
+            };
+            img.onerror = function () {
+              resolve(dataUrl);
+            };
+            img.src = dataUrl;
+          });
+        }
+
+        async function exportClientVersionHtml() {
+          const exportBtn = document.getElementById('btn-export-client');
+          const exportLabel = document.getElementById('export-btn-label');
+          if (exportBtn) exportBtn.disabled = true;
+          if (exportLabel) exportLabel.textContent = 'Preparing client file...';
+
+          try {
+            const bc = state.products.businessCard;
+            const dh = state.products.doorHanger;
+            const c34 = state.products.card3x4;
+            const bf = state.products.bifold;
+            const tf = state.products.trifold;
+
+            const [
+              bcFront, bcBack,
+              dhFront, dhBack,
+              c34Front, c34Back,
+              bfFront, bfBack,
+              tfFront, tfBack
+            ] = await Promise.all([
+              compressDataUrlIfNeeded(bc.front.dataUrl),
+              compressDataUrlIfNeeded(bc.back.dataUrl),
+              compressDataUrlIfNeeded(dh.front.dataUrl),
+              compressDataUrlIfNeeded(dh.back.dataUrl),
+              compressDataUrlIfNeeded(c34.front.dataUrl),
+              compressDataUrlIfNeeded(c34.back.dataUrl),
+              compressDataUrlIfNeeded(bf.front.dataUrl),
+              compressDataUrlIfNeeded(bf.back.dataUrl),
+              compressDataUrlIfNeeded(tf.front.dataUrl),
+              compressDataUrlIfNeeded(tf.back.dataUrl)
+            ]);
+
+            const clientNameInput = document.getElementById('client-project-input');
+            const clientTitle = (clientNameInput && clientNameInput.value.trim()) || 'Print Mockup Proof';
+
+            const exportConfig = {
+              clientName: clientTitle,
+              activeProduct: state.activeProduct,
+              lightBackground: state.lightBackground,
+              autoRotate: state.autoRotate,
+              products: {
+                businessCard: {
+                  orientation: bc.orientation,
+                  finish: bc.finish,
+                  frontDataUrl: bcFront,
+                  backDataUrl: bcBack,
+                  hasImages: Boolean(bcFront || bcBack)
+                },
+                doorHanger: {
+                  showDieCut: dh.showDieCut,
+                  finish: dh.finish,
+                  frontDataUrl: dhFront,
+                  backDataUrl: dhBack,
+                  hasImages: Boolean(dhFront || dhBack)
+                },
+                card3x4: {
+                  orientation: c34.orientation,
+                  finish: c34.finish,
+                  frontDataUrl: c34Front,
+                  backDataUrl: c34Back,
+                  hasImages: Boolean(c34Front || c34Back)
+                },
+                bifold: {
+                  width: bf.width,
+                  height: bf.height,
+                  foldPercent: bf.foldPercent,
+                  finish: bf.finish,
+                  frontDataUrl: bfFront,
+                  backDataUrl: bfBack,
+                  hasImages: Boolean(bfFront || bfBack)
+                },
+                trifold: {
+                  width: tf.width,
+                  height: tf.height,
+                  foldPercent: tf.foldPercent,
+                  foldStyle: tf.foldStyle,
+                  finish: tf.finish,
+                  frontDataUrl: tfFront,
+                  backDataUrl: tfBack,
+                  hasImages: Boolean(tfFront || tfBack)
+                }
+              }
+            };
+
+            // Clone current document DOM to produce a clean, standalone HTML file with editor UI removed
+            const docClone = document.documentElement.cloneNode(true);
+
+            // Remove any runtime fallback script tags from cloned head
+            docClone.querySelectorAll('script[data-runtime-fallback]').forEach((s) => s.remove());
+
+            // Ensure required metadata & favicon in cloned <head>
+            const cloneHead = docClone.querySelector('head');
+            if (cloneHead) {
+              if (!cloneHead.querySelector('meta[name="robots"]')) {
+                const robotsMeta = document.createElement('meta');
+                robotsMeta.setAttribute('name', 'robots');
+                robotsMeta.setAttribute('content', 'noindex, nofollow');
+                cloneHead.insertBefore(robotsMeta, cloneHead.firstChild);
+              }
+              if (!cloneHead.querySelector('meta[name="description"]')) {
+                const descMeta = document.createElement('meta');
+                descMeta.setAttribute('name', 'description');
+                descMeta.setAttribute('content', 'Interactive 3D print proof');
+                cloneHead.appendChild(descMeta);
+              }
+              if (!cloneHead.querySelector('link[rel="icon"]')) {
+                const favLink = document.createElement('link');
+                favLink.setAttribute('rel', 'icon');
+                favLink.setAttribute(
+                  'href',
+                  'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🖨️</text></svg>'
+                );
+                cloneHead.appendChild(favLink);
               }
             }
-          };
 
-          // Clone current document DOM to produce a clean, standalone HTML file with editor UI removed
-          const docClone = document.documentElement.cloneNode(true);
+            // Remove runtime Three.js canvas from clone
+            const cloneCanvasWrapper = docClone.querySelector('#canvas-wrapper');
+            if (cloneCanvasWrapper) cloneCanvasWrapper.innerHTML = '';
 
-          // Remove runtime Three.js canvas from clone
-          const cloneCanvasWrapper = docClone.querySelector('#canvas-wrapper');
-          if (cloneCanvasWrapper) cloneCanvasWrapper.innerHTML = '';
+            // Remove the editor sidebar, topbar, and 3D labels from the exported client DOM
+            const cloneSidebar = docClone.querySelector('#editor-sidebar');
+            if (cloneSidebar) cloneSidebar.remove();
 
-          // Remove the editor sidebar, topbar, and 3D labels from the exported client DOM
-          const cloneSidebar = docClone.querySelector('#editor-sidebar');
-          if (cloneSidebar) cloneSidebar.remove();
+            const cloneTopbar = docClone.querySelector('#viewport-topbar');
+            if (cloneTopbar) cloneTopbar.remove();
 
-          const cloneTopbar = docClone.querySelector('#viewport-topbar');
-          if (cloneTopbar) cloneTopbar.remove();
+            const cloneLabels = docClone.querySelector('#labels-layer');
+            if (cloneLabels) cloneLabels.remove();
 
-          const cloneLabels = docClone.querySelector('#labels-layer');
-          if (cloneLabels) cloneLabels.remove();
+            const cloneExitBtn = docClone.querySelector('#exit-presentation-btn');
+            if (cloneExitBtn) cloneExitBtn.remove();
 
-          const cloneExitBtn = docClone.querySelector('#exit-presentation-btn');
-          if (cloneExitBtn) cloneExitBtn.remove();
+            const cloneToast = docClone.querySelector('#toast-msg');
+            if (cloneToast) {
+              cloneToast.textContent = '';
+              cloneToast.classList.remove('show');
+            }
 
-          const cloneBody = docClone.querySelector('body');
-          if (cloneBody) {
-            cloneBody.classList.remove('presentation-mode');
-            cloneBody.classList.add('client-mode');
-          }
+            const cloneBody = docClone.querySelector('body');
+            if (cloneBody) {
+              cloneBody.classList.remove('presentation-mode');
+              cloneBody.classList.add('client-mode');
+            }
 
-          const cloneTitle = docClone.querySelector('title');
-          if (cloneTitle) {
-            cloneTitle.textContent = `${clientTitle} — 3D Print Mockup`;
-          }
+            const cloneTitle = docClone.querySelector('title');
+            if (cloneTitle) {
+              cloneTitle.textContent = `${clientTitle} — 3D Print Mockup`;
+            }
 
-          // Inject the serialized exportConfig into #client-config-script
-          const configScript = docClone.querySelector('#client-config-script');
-          if (configScript) {
-            configScript.textContent = `window.CLIENT_EXPORT_CONFIG = ${JSON.stringify(exportConfig)};`;
-          }
+            // Inject the serialized exportConfig into #client-config-script
+            const configScript = docClone.querySelector('#client-config-script');
+            if (configScript) {
+              configScript.textContent = `window.CLIENT_EXPORT_CONFIG = ${JSON.stringify(exportConfig)};`;
+            }
 
-          const finalHtml = '<!DOCTYPE html>\n' + docClone.outerHTML;
-          const blob = new Blob([finalHtml], { type: 'text/html;charset=utf-8' });
-          const url = URL.createObjectURL(blob);
+            const finalHtml = '<!DOCTYPE html>\n' + docClone.outerHTML;
+            const blob = new Blob([finalHtml], { type: 'text/html;charset=utf-8' });
+            const sizeBytes = blob.size;
+            const sizeMB = (sizeBytes / (1024 * 1024)).toFixed(1);
 
-          const slug = clientTitle
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-|-$/g, '') || 'print-mockup';
+            const url = URL.createObjectURL(blob);
 
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = `${slug}-3d-viewer.html`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          setTimeout(() => URL.revokeObjectURL(url), 2000);
+            const slug = clientTitle
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-')
+              .replace(/^-|-$/g, '') || 'print-mockup';
 
-          showToast('Client HTML exported! Ready to share or drop on Netlify.');
-        } catch (err) {
-          console.error('Export error:', err);
-          showToast('Could not export client file.');
-        } finally {
-          if (exportBtn) exportBtn.disabled = false;
-          if (exportLabel) exportLabel.textContent = 'Export client version';
-        }
-      }
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${slug}-3d-viewer.html`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
 
-      /* ==========================================================================
-         11. UI SYNCHRONIZATION & EVENT LISTENERS
-         ========================================================================== */
-      function updateTopbarSpecs() {
-        const dims = getProductDimensions(state.activeProduct);
-        const prod = state.products[state.activeProduct];
-
-        const nameEl = document.getElementById('spec-product-name');
-        const dimEl = document.getElementById('spec-dimensions');
-        const recBadge = document.getElementById('recommended-px-badge');
-        const foldedReadout = document.getElementById('folded-size-readout');
-
-        if (nameEl) nameEl.textContent = prod.name;
-        if (dimEl) {
-          if (isFoldedProduct(state.activeProduct)) {
-            dimEl.textContent = `Open: ${dims.width.toFixed(2)}" × ${dims.height.toFixed(2)}" • Folded: ${dims.foldedWidth.toFixed(2)}" × ${dims.height.toFixed(2)}"`;
-          } else {
-            dimEl.textContent = `${dims.width.toFixed(1)}" × ${dims.height.toFixed(1)}" × ${dims.thickness}"`;
+            if (sizeBytes > MAX_UPLOAD_BYTES) {
+              showToast(`Client HTML exported (${sizeMB} MB). File is large. Consider using smaller images.`);
+            } else {
+              showToast(`Client HTML exported (${sizeMB} MB)`);
+            }
+          } catch (err) {
+            console.error('Export error:', err);
+            showToast('Could not export client file.');
+          } finally {
+            if (exportBtn) exportBtn.disabled = false;
+            if (exportLabel) exportLabel.textContent = 'Export client version';
           }
         }
-        if (recBadge) recBadge.textContent = dims.recPxText;
-        if (foldedReadout && isFoldedProduct(state.activeProduct)) {
-          foldedReadout.textContent = `${dims.foldedWidth.toFixed(2)}" × ${dims.height.toFixed(2)}"`;
-        }
-      }
-      function syncProductUI() {
-        const pKey = state.activeProduct;
-        const hasOrient = pKey === 'businessCard' || pKey === 'card3x4';
-        const isDH = pKey === 'doorHanger';
-        const isFold = isFoldedProduct(pKey);
-        const prod = state.products[pKey];
 
-        document.querySelectorAll('[data-product]').forEach((btn) => {
-          btn.classList.toggle('active', btn.getAttribute('data-product') === pKey);
-        });
+        /* ==========================================================================
+           11. UI SYNCHRONIZATION & EVENT LISTENERS
+           ========================================================================== */
+        function updateTopbarSpecs() {
+          const dims = getProductDimensions(state.activeProduct);
+          const prod = state.products[state.activeProduct];
 
-        document.querySelectorAll('[data-client-product]').forEach((btn) => {
-          btn.classList.toggle('active', btn.getAttribute('data-client-product') === pKey);
-        });
+          const nameEl = document.getElementById('spec-product-name');
+          const dimEl = document.getElementById('spec-dimensions');
+          const recBadge = document.getElementById('recommended-px-badge');
+          const foldedReadout = document.getElementById('folded-size-readout');
 
-        const bcOrientRow = document.getElementById('bc-orientation-control');
-        const dhDiecutRow = document.getElementById('dh-diecut-control');
-        const foldControls = document.getElementById('fold-custom-controls');
-        const trifoldStyleRow = document.getElementById('trifold-style-row');
-
-        if (bcOrientRow) bcOrientRow.style.display = hasOrient ? 'flex' : 'none';
-        if (dhDiecutRow) dhDiecutRow.style.display = isDH ? 'flex' : 'none';
-        if (foldControls) foldControls.style.display = isFold ? 'flex' : 'none';
-        if (trifoldStyleRow) trifoldStyleRow.style.display = pKey === 'trifold' ? 'flex' : 'none';
-
-        if (hasOrient) {
-          document.querySelectorAll('[data-orientation]').forEach((btn) => {
-            btn.classList.toggle('active', btn.getAttribute('data-orientation') === prod.orientation);
-          });
+          if (nameEl) nameEl.textContent = prod.name;
+          if (dimEl) {
+            if (isFoldedProduct(state.activeProduct)) {
+              dimEl.textContent = `Open: ${dims.width.toFixed(2)}" × ${dims.height.toFixed(2)}" • Folded: ${dims.foldedWidth.toFixed(2)}" × ${dims.height.toFixed(2)}"`;
+            } else {
+              dimEl.textContent = `${dims.width.toFixed(1)}" × ${dims.height.toFixed(1)}" × ${dims.thickness}"`;
+            }
+          }
+          if (recBadge) recBadge.textContent = dims.recPxText;
+          if (foldedReadout && isFoldedProduct(state.activeProduct)) {
+            foldedReadout.textContent = `${dims.foldedWidth.toFixed(2)}" × ${dims.height.toFixed(2)}"`;
+          }
         }
 
-        const diecutCheckbox = document.getElementById('toggle-diecut');
-        if (diecutCheckbox) {
-          diecutCheckbox.checked = state.products.doorHanger.showDieCut;
-        }
+        function syncProductUI() {
+          const pKey = state.activeProduct;
+          const hasOrient = pKey === 'businessCard' || pKey === 'card3x4';
+          const isDH = pKey === 'doorHanger';
+          const isFold = isFoldedProduct(pKey);
+          const prod = state.products[pKey];
 
-        if (isFold) {
-          const wInput = document.getElementById('input-fold-width');
-          const hInput = document.getElementById('input-fold-height');
-          const foldSlider = document.getElementById('slider-fold-angle');
-          const foldLabel = document.getElementById('fold-percent-label');
-
-          if (wInput && document.activeElement !== wInput) wInput.value = prod.width;
-          if (hInput && document.activeElement !== hInput) hInput.value = prod.height;
-          if (foldSlider) foldSlider.value = prod.foldPercent;
-          if (foldLabel) foldLabel.textContent = `${Math.round(prod.foldPercent)}% Folded`;
-
-          document.querySelectorAll('[data-fold-preset]').forEach((btn) => {
-            btn.classList.toggle(
-              'active',
-              Number(btn.getAttribute('data-fold-preset')) === Math.round(prod.foldPercent)
-            );
+          document.querySelectorAll('[data-product]').forEach((btn) => {
+            btn.classList.toggle('active', btn.getAttribute('data-product') === pKey);
           });
 
-          if (pKey === 'trifold') {
-            document.querySelectorAll('[data-fold-style]').forEach((btn) => {
+          document.querySelectorAll('[data-client-product]').forEach((btn) => {
+            btn.classList.toggle('active', btn.getAttribute('data-client-product') === pKey);
+          });
+
+          const bcOrientRow = document.getElementById('bc-orientation-control');
+          const dhDiecutRow = document.getElementById('dh-diecut-control');
+          const foldControls = document.getElementById('fold-custom-controls');
+          const trifoldStyleRow = document.getElementById('trifold-style-row');
+
+          if (bcOrientRow) bcOrientRow.style.display = hasOrient ? 'flex' : 'none';
+          if (dhDiecutRow) dhDiecutRow.style.display = isDH ? 'flex' : 'none';
+          if (foldControls) foldControls.style.display = isFold ? 'flex' : 'none';
+          if (trifoldStyleRow) trifoldStyleRow.style.display = pKey === 'trifold' ? 'flex' : 'none';
+
+          if (hasOrient) {
+            document.querySelectorAll('[data-orientation]').forEach((btn) => {
+              btn.classList.toggle('active', btn.getAttribute('data-orientation') === prod.orientation);
+            });
+          }
+
+          const diecutCheckbox = document.getElementById('toggle-diecut');
+          if (diecutCheckbox) {
+            diecutCheckbox.checked = state.products.doorHanger.showDieCut;
+          }
+
+          if (isFold) {
+            const wInput = document.getElementById('input-fold-width');
+            const hInput = document.getElementById('input-fold-height');
+            const foldSlider = document.getElementById('slider-fold-angle');
+            const foldLabel = document.getElementById('fold-percent-label');
+
+            if (wInput && document.activeElement !== wInput) wInput.value = prod.width;
+            if (hInput && document.activeElement !== hInput) hInput.value = prod.height;
+            if (foldSlider) foldSlider.value = prod.foldPercent;
+            if (foldLabel) foldLabel.textContent = `${Math.round(prod.foldPercent)}% Folded`;
+
+            document.querySelectorAll('[data-fold-preset]').forEach((btn) => {
               btn.classList.toggle(
                 'active',
-                btn.getAttribute('data-fold-style') === state.products.trifold.foldStyle
+                Number(btn.getAttribute('data-fold-preset')) === Math.round(prod.foldPercent)
               );
             });
-          }
-        }
 
-        // Update Front / Back upload titles for folded brochures vs flat cards
-        const lblFront = document.getElementById('label-upload-front');
-        const lblBack = document.getElementById('label-upload-back');
-        if (lblFront) lblFront.textContent = isFold ? 'Outside Spread' : 'Front';
-        if (lblBack) lblBack.textContent = isFold ? 'Inside Spread' : 'Back';
-
-        const clientFoldBtn = document.getElementById('client-btn-fold-toggle');
-        if (clientFoldBtn) {
-          clientFoldBtn.style.display = isFold ? 'inline-flex' : 'none';
-        }
-
-        document.querySelectorAll('[data-finish]').forEach((btn) => {
-          btn.classList.toggle('active', btn.getAttribute('data-finish') === prod.finish);
-        });
-
-        syncUploadCardsUI();
-        updateTopbarSpecs();
-      }
-
-      function syncUploadCardsUI() {
-        const prod = state.products[state.activeProduct];
-        ['front', 'back'].forEach((side) => {
-          const card = document.getElementById(`upload-card-${side}`);
-          const thumb = document.getElementById(`thumb-${side}`);
-          const slot = prod[side];
-
-          if (card && thumb) {
-            if (slot && slot.dataUrl) {
-              card.classList.add('has-file');
-              thumb.src = slot.dataUrl;
-            } else {
-              card.classList.remove('has-file');
-              thumb.removeAttribute('src');
-            }
-          }
-        });
-        updateAspectWarnings();
-      }
-
-      function updateViewButtonsUI() {
-        const v = state.activeView;
-        const btnFront = document.getElementById('btn-view-front');
-        const btnBack = document.getElementById('btn-view-back');
-        const btnReset = document.getElementById('btn-view-reset');
-
-        if (btnFront) btnFront.classList.toggle('active', v === 'front');
-        if (btnBack) btnBack.classList.toggle('active', v === 'back');
-        if (btnReset) btnReset.classList.toggle('active', v === 'cover');
-
-        const cFront = document.getElementById('client-btn-front');
-        const cBack = document.getElementById('client-btn-back');
-        if (cFront) cFront.classList.toggle('active', v === 'front');
-        if (cBack) cBack.classList.toggle('active', v === 'back');
-
-        if (labelCoverEl) labelCoverEl.classList.toggle('active-label', v === 'cover');
-        if (labelFrontEl) labelFrontEl.classList.toggle('active-label', v === 'front');
-        if (labelBackEl) labelBackEl.classList.toggle('active-label', v === 'back');
-      }
-
-      function syncAutoRotateUI() {
-        const cb = document.getElementById('toggle-autorotate');
-        if (cb) cb.checked = state.autoRotate;
-        const clientAutoBtn = document.getElementById('client-btn-autorotate');
-        if (clientAutoBtn) clientAutoBtn.classList.toggle('active', state.autoRotate);
-      }
-
-      function togglePresentationMode(forceState) {
-        if (state.isClientMode) return;
-        state.presentationMode =
-          typeof forceState === 'boolean' ? forceState : !state.presentationMode;
-        document.body.classList.toggle('presentation-mode', state.presentationMode);
-      }
-
-      function toggleFullscreen() {
-        if (!document.fullscreenElement) {
-          document.documentElement.requestFullscreen().catch(() => {
-            showToast('Fullscreen is blocked by browser permissions.');
-          });
-        } else if (document.exitFullscreen) {
-          document.exitFullscreen();
-        }
-      }
-
-      function applyBackgroundTheme(isLight) {
-        state.lightBackground = isLight;
-        const appContainer = document.getElementById('app-container');
-        if (appContainer) {
-          appContainer.classList.toggle('light-theme', isLight);
-        }
-        if (floorFadeMat.map) floorFadeMat.map.dispose();
-        floorFadeMat.map = createFloorFadeTexture(isLight);
-        floorFadeMat.needsUpdate = true;
-      }
-
-      function bindEditorEvents() {
-        // Product Switcher
-        document.querySelectorAll('[data-product]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            switchProductWithTransition(btn.getAttribute('data-product'));
-          });
-        });
-
-        // Business Card & 3x4 Card Orientation
-        document.querySelectorAll('[data-orientation]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            const orient = btn.getAttribute('data-orientation');
-            const prod = state.products[state.activeProduct];
-            if (prod && prod.orientation && prod.orientation !== orient) {
-              prod.orientation = orient;
-              syncProductUI();
-              rebuildActiveMesh();
-              animateToView(state.activeView, 500);
-            }
-          });
-        });
-
-        // Bi-Fold & Tri-Fold Custom Width & Height Inputs
-        const wInput = document.getElementById('input-fold-width');
-        const hInput = document.getElementById('input-fold-height');
-        function applyCustomFoldDimensions() {
-          if (!isFoldedProduct(state.activeProduct)) return;
-          const prod = state.products[state.activeProduct];
-          const newW = Math.max(3, Math.min(36, parseFloat(wInput.value) || prod.width));
-          const newH = Math.max(2, Math.min(24, parseFloat(hInput.value) || prod.height));
-          prod.width = newW;
-          prod.height = newH;
-          syncProductUI();
-          rebuildActiveMesh();
-        }
-        if (wInput) wInput.addEventListener('change', applyCustomFoldDimensions);
-        if (hInput) hInput.addEventListener('change', applyCustomFoldDimensions);
-
-        // Quick Dimension Preset Chips
-        document.querySelectorAll('#fold-size-presets .preset-chip').forEach((chip) => {
-          chip.addEventListener('click', () => {
-            if (!isFoldedProduct(state.activeProduct)) return;
-            const prod = state.products[state.activeProduct];
-            prod.width = parseFloat(chip.getAttribute('data-w'));
-            prod.height = parseFloat(chip.getAttribute('data-h'));
-            syncProductUI();
-            rebuildActiveMesh();
-            animateToView(state.activeView, 550);
-          });
-        });
-
-        // Interactive 3D Fold Slider & Preset Buttons
-        const foldSlider = document.getElementById('slider-fold-angle');
-        const foldLabel = document.getElementById('fold-percent-label');
-        if (foldSlider) {
-          foldSlider.addEventListener('input', (e) => {
-            if (!isFoldedProduct(state.activeProduct)) return;
-            const val = Number(e.target.value);
-            state.products[state.activeProduct].foldPercent = val;
-            if (foldLabel) foldLabel.textContent = `${Math.round(val)}% Folded`;
-            document.querySelectorAll('[data-fold-preset]').forEach((btn) => {
-              btn.classList.toggle('active', Number(btn.getAttribute('data-fold-preset')) === Math.round(val));
-            });
-            updateFoldAnglesInScene();
-          });
-        }
-
-        document.querySelectorAll('[data-fold-preset]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            if (!isFoldedProduct(state.activeProduct)) return;
-            const targetVal = Number(btn.getAttribute('data-fold-preset'));
-            state.products[state.activeProduct].foldPercent = targetVal;
-            syncProductUI();
-            updateFoldAnglesInScene();
-          });
-        });
-
-        // Tri-Fold Fold Type (Roll C-Fold vs Z-Fold)
-        document.querySelectorAll('[data-fold-style]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            const style = btn.getAttribute('data-fold-style');
-            if (state.products.trifold.foldStyle !== style) {
-              state.products.trifold.foldStyle = style;
-              syncProductUI();
-              rebuildActiveMesh();
-            }
-          });
-        });
-
-        // Door Hanger Die-cut Hole Toggle
-        const diecutToggle = document.getElementById('toggle-diecut');
-        if (diecutToggle) {
-          diecutToggle.addEventListener('change', (e) => {
-            state.products.doorHanger.showDieCut = e.target.checked;
-            rebuildActiveMesh();
-          });
-        }
-
-        // Paper Finish Selector
-        document.querySelectorAll('[data-finish]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            const finish = btn.getAttribute('data-finish');
-            state.products[state.activeProduct].finish = finish;
-            syncProductUI();
-            updateFinishProperties();
-          });
-        });
-
-        // Artwork Drag & Drop + File Click for Front and Back
-        ['front', 'back'].forEach((side) => {
-          const dropzone = document.getElementById(`dropzone-${side}`);
-          const card = document.getElementById(`upload-card-${side}`);
-          const fileInput = document.getElementById(`file-input-${side}`);
-          const removeBtn = document.getElementById(`remove-${side}`);
-
-          if (dropzone && fileInput) {
-            dropzone.addEventListener('click', () => fileInput.click());
-            dropzone.addEventListener('keydown', (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                fileInput.click();
-              }
-            });
-
-            fileInput.addEventListener('change', (e) => {
-              if (e.target.files && e.target.files[0]) {
-                handleFileSelect(side, e.target.files[0]);
-              }
-            });
-          }
-
-          if (card) {
-            card.addEventListener('dragover', (e) => {
-              e.preventDefault();
-              card.classList.add('dragover');
-            });
-            card.addEventListener('dragleave', () => {
-              card.classList.remove('dragover');
-            });
-            card.addEventListener('drop', (e) => {
-              e.preventDefault();
-              card.classList.remove('dragover');
-              if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
-                handleFileSelect(side, e.dataTransfer.files[0]);
-              }
-            });
-          }
-
-          if (removeBtn) {
-            removeBtn.addEventListener('click', (e) => {
-              e.stopPropagation();
-              removeArtwork(side);
-            });
-          }
-        });
-
-        // View Buttons
-        const btnFront = document.getElementById('btn-view-front');
-        const btnBack = document.getElementById('btn-view-back');
-        const btnFlip = document.getElementById('btn-view-flip');
-        const btnReset = document.getElementById('btn-view-reset');
-
-        if (btnFront) btnFront.addEventListener('click', () => animateToView('front', 800));
-        if (btnBack) btnBack.addEventListener('click', () => animateToView('back', 800));
-        if (btnFlip) btnFlip.addEventListener('click', () => flipPieceSmoothly());
-        if (btnReset) btnReset.addEventListener('click', () => animateToView('cover', 800));
-
-        // 3D Floating Label Clicks
-        if (labelCoverEl) labelCoverEl.addEventListener('click', () => animateToView('cover', 800));
-        if (labelFrontEl) labelFrontEl.addEventListener('click', () => animateToView('front', 800));
-        if (labelBackEl) labelBackEl.addEventListener('click', () => animateToView('back', 800));
-
-        // Toggles: Auto-rotate, Show Labels, Light Background
-        const toggleAutorotate = document.getElementById('toggle-autorotate');
-        if (toggleAutorotate) {
-          toggleAutorotate.addEventListener('change', (e) => {
-            state.autoRotate = e.target.checked;
-          });
-        }
-
-        const toggleLabels = document.getElementById('toggle-labels');
-        const labelsLayer = document.getElementById('labels-layer');
-        if (toggleLabels && labelsLayer) {
-          toggleLabels.addEventListener('change', (e) => {
-            state.showLabels = e.target.checked;
-            labelsLayer.classList.toggle('hidden', !state.showLabels);
-          });
-        }
-
-        const toggleLightBg = document.getElementById('toggle-light-bg');
-        if (toggleLightBg) {
-          toggleLightBg.addEventListener('change', (e) => {
-            applyBackgroundTheme(e.target.checked);
-          });
-        }
-
-        // Presentation Mode & Fullscreen
-        const btnPres = document.getElementById('btn-presentation');
-        const btnExitPres = document.getElementById('exit-presentation-btn');
-        if (btnPres) btnPres.addEventListener('click', () => togglePresentationMode(true));
-        if (btnExitPres) btnExitPres.addEventListener('click', () => togglePresentationMode(false));
-
-        const btnFs = document.getElementById('btn-fullscreen');
-        if (btnFs) btnFs.addEventListener('click', toggleFullscreen);
-
-        // Keyboard Shortcut 'H' for Presentation Mode
-        window.addEventListener('keydown', (e) => {
-          const tag = (e.target && e.target.tagName) || '';
-          if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-          if (e.key === 'h' || e.key === 'H') {
-            togglePresentationMode();
-          }
-        });
-
-        // Mobile Bottom Sheet Collapse Toggle
-        const mobileSheetToggle = document.getElementById('mobile-sheet-toggle');
-        const sidebar = document.getElementById('editor-sidebar');
-        if (mobileSheetToggle && sidebar) {
-          mobileSheetToggle.addEventListener('click', () => {
-            const collapsed = sidebar.classList.toggle('sheet-collapsed');
-            mobileSheetToggle.textContent = collapsed ? 'Expand' : 'Collapse';
-          });
-        }
-
-        // Export Client Version
-        const btnExport = document.getElementById('btn-export-client');
-        if (btnExport) {
-          btnExport.addEventListener('click', exportClientVersionHtml);
-        }
-      }
-
-      /* ==========================================================================
-         12. CLIENT MODE INITIALIZATION (When opened from exported client HTML)
-         ========================================================================== */
-      function initClientModeIfConfigured() {
-        const cfg = window.CLIENT_EXPORT_CONFIG;
-        if (!cfg) return;
-
-        document.body.classList.add('client-mode');
-        state.isClientMode = true;
-        state.activeProduct = cfg.activeProduct || 'businessCard';
-        state.autoRotate = Boolean(cfg.autoRotate);
-        applyBackgroundTheme(Boolean(cfg.lightBackground));
-
-        const titleEl = document.getElementById('client-project-title');
-        if (titleEl) titleEl.textContent = cfg.clientName || 'Print Proof';
-
-        // Restore product settings & embedded base64 textures
-        if (cfg.products) {
-          const prodKeys = ['businessCard', 'doorHanger', 'card3x4', 'bifold', 'trifold'];
-          const productsWithArtwork = [];
-
-          prodKeys.forEach((k) => {
-            const pCfg = cfg.products[k];
-            if (!pCfg) return;
-            const targetProd = state.products[k];
-            if (pCfg.orientation) targetProd.orientation = pCfg.orientation;
-            if (typeof pCfg.showDieCut === 'boolean') targetProd.showDieCut = pCfg.showDieCut;
-            if (pCfg.width) targetProd.width = pCfg.width;
-            if (pCfg.height) targetProd.height = pCfg.height;
-            if (typeof pCfg.foldPercent === 'number') targetProd.foldPercent = pCfg.foldPercent;
-            if (pCfg.foldStyle) targetProd.foldStyle = pCfg.foldStyle;
-            if (pCfg.finish) targetProd.finish = pCfg.finish;
-
-            if (pCfg.frontDataUrl) {
-              loadArtworkFromDataUrl(k, 'front', pCfg.frontDataUrl);
-            }
-            if (pCfg.backDataUrl) {
-              loadArtworkFromDataUrl(k, 'back', pCfg.backDataUrl);
-            }
-            if (pCfg.hasImages) {
-              productsWithArtwork.push(k);
-            }
-          });
-
-          // Show product switcher in Client Mode ONLY for products that have uploaded artwork (if > 1)
-          const clientSwitcher = document.getElementById('client-product-switcher');
-          if (clientSwitcher) {
-            if (productsWithArtwork.length > 1) {
-              clientSwitcher.style.display = 'flex';
-              clientSwitcher.querySelectorAll('[data-client-product]').forEach((btn) => {
-                const pk = btn.getAttribute('data-client-product');
-                btn.style.display = productsWithArtwork.includes(pk) ? 'inline-flex' : 'none';
+            if (pKey === 'trifold') {
+              document.querySelectorAll('[data-fold-style]').forEach((btn) => {
+                btn.classList.toggle(
+                  'active',
+                  btn.getAttribute('data-fold-style') === state.products.trifold.foldStyle
+                );
               });
-            } else {
-              clientSwitcher.style.display = 'none';
             }
+          }
+
+          // Update Front / Back upload titles for folded brochures vs flat cards
+          const lblFront = document.getElementById('label-upload-front');
+          const lblBack = document.getElementById('label-upload-back');
+          if (lblFront) lblFront.textContent = isFold ? 'Outside Spread' : 'Front';
+          if (lblBack) lblBack.textContent = isFold ? 'Inside Spread' : 'Back';
+
+          const clientFoldBtn = document.getElementById('client-btn-fold-toggle');
+          if (clientFoldBtn) {
+            clientFoldBtn.style.display = isFold ? 'inline-flex' : 'none';
+          }
+
+          document.querySelectorAll('[data-finish]').forEach((btn) => {
+            btn.classList.toggle('active', btn.getAttribute('data-finish') === prod.finish);
+          });
+
+          syncUploadCardsUI();
+          updateTopbarSpecs();
+        }
+
+        function syncUploadCardsUI() {
+          const prod = state.products[state.activeProduct];
+          ['front', 'back'].forEach((side) => {
+            const card = document.getElementById(`upload-card-${side}`);
+            const thumb = document.getElementById(`thumb-${side}`);
+            const slot = prod[side];
+
+            if (card && thumb) {
+              if (slot && slot.dataUrl) {
+                card.classList.add('has-file');
+                thumb.src = slot.dataUrl;
+              } else {
+                card.classList.remove('has-file');
+                thumb.removeAttribute('src');
+              }
+            }
+          });
+          updateAspectWarnings();
+        }
+
+        function updateViewButtonsUI() {
+          const v = state.activeView;
+          const btnFront = document.getElementById('btn-view-front');
+          const btnBack = document.getElementById('btn-view-back');
+          const btnReset = document.getElementById('btn-view-reset');
+
+          if (btnFront) btnFront.classList.toggle('active', v === 'front');
+          if (btnBack) btnBack.classList.toggle('active', v === 'back');
+          if (btnReset) btnReset.classList.toggle('active', v === 'cover');
+
+          const cFront = document.getElementById('client-btn-front');
+          const cBack = document.getElementById('client-btn-back');
+          if (cFront) cFront.classList.toggle('active', v === 'front');
+          if (cBack) cBack.classList.toggle('active', v === 'back');
+
+          if (labelCoverEl) labelCoverEl.classList.toggle('active-label', v === 'cover');
+          if (labelFrontEl) labelFrontEl.classList.toggle('active-label', v === 'front');
+          if (labelBackEl) labelBackEl.classList.toggle('active-label', v === 'back');
+        }
+
+        function syncAutoRotateUI() {
+          const cb = document.getElementById('toggle-autorotate');
+          if (cb) cb.checked = state.autoRotate;
+          const clientAutoBtn = document.getElementById('client-btn-autorotate');
+          if (clientAutoBtn) clientAutoBtn.classList.toggle('active', state.autoRotate);
+        }
+
+        function togglePresentationMode(forceState) {
+          if (state.isClientMode) return;
+          state.presentationMode =
+            typeof forceState === 'boolean' ? forceState : !state.presentationMode;
+          document.body.classList.toggle('presentation-mode', state.presentationMode);
+          labelsDirty = true;
+        }
+
+        function toggleFullscreen() {
+          if (!document.fullscreenElement) {
+            document.documentElement.requestFullscreen().catch(() => {
+              showToast('Fullscreen is blocked by browser permissions.');
+            });
+          } else if (document.exitFullscreen) {
+            document.exitFullscreen();
           }
         }
 
-        // Bind Client UI Buttons
-        document.querySelectorAll('[data-client-product]').forEach((btn) => {
-          btn.addEventListener('click', () => {
-            switchProductWithTransition(btn.getAttribute('data-client-product'));
+        function applyBackgroundTheme(isLight) {
+          state.lightBackground = isLight;
+          const appContainer = document.getElementById('app-container');
+          if (appContainer) {
+            appContainer.classList.toggle('light-theme', isLight);
+          }
+          if (floorFadeMat.map) floorFadeMat.map.dispose();
+          floorFadeMat.map = createFloorFadeTexture(isLight);
+          floorFadeMat.needsUpdate = true;
+        }
+
+        function bindEditorEvents() {
+          // Product Switcher
+          document.querySelectorAll('[data-product]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              switchProductWithTransition(btn.getAttribute('data-product'));
+            });
           });
-        });
 
-        const cFront = document.getElementById('client-btn-front');
-        const cBack = document.getElementById('client-btn-back');
-        const cFlip = document.getElementById('client-btn-flip');
-        const cFoldToggle = document.getElementById('client-btn-fold-toggle');
-        const cAuto = document.getElementById('client-btn-autorotate');
-        const cFs = document.getElementById('client-btn-fullscreen');
+          // Business Card & 3x4 Card Orientation
+          document.querySelectorAll('[data-orientation]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const orient = btn.getAttribute('data-orientation');
+              const prod = state.products[state.activeProduct];
+              if (prod && prod.orientation && prod.orientation !== orient) {
+                prod.orientation = orient;
+                syncProductUI();
+                rebuildActiveMesh();
+                animateToView(state.activeView, 500);
+              }
+            });
+          });
 
-        if (cFront) cFront.addEventListener('click', () => animateToView('front', 800));
-        if (cBack) cBack.addEventListener('click', () => animateToView('back', 800));
-        if (cFlip) cFlip.addEventListener('click', () => flipPieceSmoothly());
-        if (cFoldToggle) {
-          cFoldToggle.addEventListener('click', () => {
+          // Bi-Fold & Tri-Fold Custom Width & Height Inputs
+          const wInput = document.getElementById('input-fold-width');
+          const hInput = document.getElementById('input-fold-height');
+          function applyCustomFoldDimensions() {
             if (!isFoldedProduct(state.activeProduct)) return;
             const prod = state.products[state.activeProduct];
-            // Cycle between Flat (0%), Display (45%), and Closed (95%)
-            if (prod.foldPercent < 20) prod.foldPercent = 45;
-            else if (prod.foldPercent < 75) prod.foldPercent = 95;
-            else prod.foldPercent = 0;
-            updateFoldAnglesInScene();
+            const newW = Math.max(3, Math.min(36, parseFloat(wInput.value) || prod.width));
+            const newH = Math.max(2, Math.min(24, parseFloat(hInput.value) || prod.height));
+            prod.width = newW;
+            prod.height = newH;
+            syncProductUI();
+            rebuildActiveMesh();
+          }
+          if (wInput) wInput.addEventListener('change', applyCustomFoldDimensions);
+          if (hInput) hInput.addEventListener('change', applyCustomFoldDimensions);
+
+          // Quick Dimension Preset Chips
+          document.querySelectorAll('#fold-size-presets .preset-chip').forEach((chip) => {
+            chip.addEventListener('click', () => {
+              if (!isFoldedProduct(state.activeProduct)) return;
+              const prod = state.products[state.activeProduct];
+              prod.width = parseFloat(chip.getAttribute('data-w'));
+              prod.height = parseFloat(chip.getAttribute('data-h'));
+              syncProductUI();
+              rebuildActiveMesh();
+              animateToView(state.activeView, 550);
+            });
           });
+
+          // Interactive 3D Fold Slider & Preset Buttons
+          const foldSlider = document.getElementById('slider-fold-angle');
+          const foldLabel = document.getElementById('fold-percent-label');
+          if (foldSlider) {
+            foldSlider.addEventListener('input', (e) => {
+              if (!isFoldedProduct(state.activeProduct)) return;
+              const val = Number(e.target.value);
+              state.products[state.activeProduct].foldPercent = val;
+              if (foldLabel) foldLabel.textContent = `${Math.round(val)}% Folded`;
+              document.querySelectorAll('[data-fold-preset]').forEach((btn) => {
+                btn.classList.toggle('active', Number(btn.getAttribute('data-fold-preset')) === Math.round(val));
+              });
+              updateFoldAnglesInScene();
+            });
+          }
+
+          document.querySelectorAll('[data-fold-preset]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              if (!isFoldedProduct(state.activeProduct)) return;
+              const targetVal = Number(btn.getAttribute('data-fold-preset'));
+              state.products[state.activeProduct].foldPercent = targetVal;
+              syncProductUI();
+              updateFoldAnglesInScene();
+            });
+          });
+
+          // Tri-Fold Fold Type (Roll C-Fold vs Z-Fold)
+          document.querySelectorAll('[data-fold-style]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const style = btn.getAttribute('data-fold-style');
+              if (state.products.trifold.foldStyle !== style) {
+                state.products.trifold.foldStyle = style;
+                syncProductUI();
+                rebuildActiveMesh();
+              }
+            });
+          });
+
+          // Door Hanger Die-cut Hole Toggle
+          const diecutToggle = document.getElementById('toggle-diecut');
+          if (diecutToggle) {
+            diecutToggle.addEventListener('change', (e) => {
+              state.products.doorHanger.showDieCut = e.target.checked;
+              rebuildActiveMesh();
+            });
+          }
+
+          // Paper Finish Selector
+          document.querySelectorAll('[data-finish]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              const finish = btn.getAttribute('data-finish');
+              state.products[state.activeProduct].finish = finish;
+              syncProductUI();
+              updateFinishProperties();
+            });
+          });
+
+          // Artwork Drag & Drop + File Click for Front and Back
+          ['front', 'back'].forEach((side) => {
+            const dropzone = document.getElementById(`dropzone-${side}`);
+            const card = document.getElementById(`upload-card-${side}`);
+            const fileInput = document.getElementById(`file-input-${side}`);
+            const removeBtn = document.getElementById(`remove-${side}`);
+
+            if (dropzone && fileInput) {
+              dropzone.addEventListener('click', () => fileInput.click());
+              dropzone.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  fileInput.click();
+                }
+              });
+
+              fileInput.addEventListener('change', (e) => {
+                if (e.target.files && e.target.files[0]) {
+                  handleFileSelect(side, e.target.files[0]);
+                }
+              });
+            }
+
+            if (card) {
+              card.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                card.classList.add('dragover');
+              });
+              card.addEventListener('dragleave', () => {
+                card.classList.remove('dragover');
+              });
+              card.addEventListener('drop', (e) => {
+                e.preventDefault();
+                card.classList.remove('dragover');
+                if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]) {
+                  handleFileSelect(side, e.dataTransfer.files[0]);
+                }
+              });
+            }
+
+            if (removeBtn) {
+              removeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                removeArtwork(side);
+              });
+            }
+          });
+
+          // View Buttons
+          const btnFront = document.getElementById('btn-view-front');
+          const btnBack = document.getElementById('btn-view-back');
+          const btnFlip = document.getElementById('btn-view-flip');
+          const btnReset = document.getElementById('btn-view-reset');
+
+          if (btnFront) btnFront.addEventListener('click', () => animateToView('front', 800));
+          if (btnBack) btnBack.addEventListener('click', () => animateToView('back', 800));
+          if (btnFlip) btnFlip.addEventListener('click', () => flipPieceSmoothly());
+          if (btnReset) btnReset.addEventListener('click', () => animateToView('cover', 800));
+
+          // 3D Floating Label Clicks
+          if (labelCoverEl) labelCoverEl.addEventListener('click', () => animateToView('cover', 800));
+          if (labelFrontEl) labelFrontEl.addEventListener('click', () => animateToView('front', 800));
+          if (labelBackEl) labelBackEl.addEventListener('click', () => animateToView('back', 800));
+
+          // Toggles: Auto-rotate, Show Labels, Light Background
+          const toggleAutorotate = document.getElementById('toggle-autorotate');
+          if (toggleAutorotate) {
+            toggleAutorotate.addEventListener('change', (e) => {
+              state.autoRotate = e.target.checked;
+            });
+          }
+
+          const toggleLabels = document.getElementById('toggle-labels');
+          const labelsLayer = document.getElementById('labels-layer');
+          if (toggleLabels && labelsLayer) {
+            toggleLabels.addEventListener('change', (e) => {
+              state.showLabels = e.target.checked;
+              labelsLayer.classList.toggle('hidden', !state.showLabels);
+              if (state.showLabels) labelsDirty = true;
+            });
+          }
+
+          const toggleLightBg = document.getElementById('toggle-light-bg');
+          if (toggleLightBg) {
+            toggleLightBg.addEventListener('change', (e) => {
+              applyBackgroundTheme(e.target.checked);
+            });
+          }
+
+          // Presentation Mode & Fullscreen
+          const btnPres = document.getElementById('btn-presentation');
+          const btnExitPres = document.getElementById('exit-presentation-btn');
+          if (btnPres) btnPres.addEventListener('click', () => togglePresentationMode(true));
+          if (btnExitPres) btnExitPres.addEventListener('click', () => togglePresentationMode(false));
+
+          const btnFs = document.getElementById('btn-fullscreen');
+          if (btnFs) btnFs.addEventListener('click', toggleFullscreen);
+
+          // Keyboard Shortcut 'H' for Presentation Mode
+          window.addEventListener('keydown', (e) => {
+            const tag = (e.target && e.target.tagName) || '';
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            if (e.key === 'h' || e.key === 'H') {
+              togglePresentationMode();
+            }
+          });
+
+          // Mobile Bottom Sheet Collapse Toggle
+          const mobileSheetToggle = document.getElementById('mobile-sheet-toggle');
+          const sidebar = document.getElementById('editor-sidebar');
+          if (mobileSheetToggle && sidebar) {
+            mobileSheetToggle.addEventListener('click', () => {
+              const collapsed = sidebar.classList.toggle('sheet-collapsed');
+              mobileSheetToggle.textContent = collapsed ? 'Expand' : 'Collapse';
+            });
+          }
+
+          // Export Client Version
+          const btnExport = document.getElementById('btn-export-client');
+          if (btnExport) {
+            btnExport.addEventListener('click', exportClientVersionHtml);
+          }
         }
-        if (cAuto) {
-          cAuto.classList.toggle('active', state.autoRotate);
-          cAuto.addEventListener('click', () => {
-            state.autoRotate = !state.autoRotate;
+
+        /* ==========================================================================
+           12. CLIENT MODE INITIALIZATION (When opened from exported client HTML)
+           ========================================================================== */
+        function initClientModeIfConfigured() {
+          const cfg = window.CLIENT_EXPORT_CONFIG;
+          if (!cfg) return;
+
+          document.body.classList.add('client-mode');
+          state.isClientMode = true;
+          state.activeProduct = cfg.activeProduct || 'businessCard';
+          state.autoRotate = prefersReducedMotion ? false : Boolean(cfg.autoRotate);
+          applyBackgroundTheme(Boolean(cfg.lightBackground));
+
+          const titleEl = document.getElementById('client-project-title');
+          if (titleEl) titleEl.textContent = cfg.clientName || 'Print Proof';
+
+          // Restore product settings & embedded base64 textures
+          if (cfg.products) {
+            const prodKeys = ['businessCard', 'doorHanger', 'card3x4', 'bifold', 'trifold'];
+            const productsWithArtwork = [];
+
+            prodKeys.forEach((k) => {
+              const pCfg = cfg.products[k];
+              if (!pCfg) return;
+              const targetProd = state.products[k];
+              if (pCfg.orientation) targetProd.orientation = pCfg.orientation;
+              if (typeof pCfg.showDieCut === 'boolean') targetProd.showDieCut = pCfg.showDieCut;
+              if (pCfg.width) targetProd.width = pCfg.width;
+              if (pCfg.height) targetProd.height = pCfg.height;
+              if (typeof pCfg.foldPercent === 'number') targetProd.foldPercent = pCfg.foldPercent;
+              if (pCfg.foldStyle) targetProd.foldStyle = pCfg.foldStyle;
+              if (pCfg.finish) targetProd.finish = pCfg.finish;
+
+              if (pCfg.frontDataUrl) {
+                loadArtworkFromDataUrl(k, 'front', pCfg.frontDataUrl);
+              }
+              if (pCfg.backDataUrl) {
+                loadArtworkFromDataUrl(k, 'back', pCfg.backDataUrl);
+              }
+              if (pCfg.hasImages) {
+                productsWithArtwork.push(k);
+              }
+            });
+
+            // Show product switcher in Client Mode ONLY for products that have uploaded artwork (if > 1)
+            const clientSwitcher = document.getElementById('client-product-switcher');
+            if (clientSwitcher) {
+              if (productsWithArtwork.length > 1) {
+                clientSwitcher.style.display = 'flex';
+                clientSwitcher.querySelectorAll('[data-client-product]').forEach((btn) => {
+                  const pk = btn.getAttribute('data-client-product');
+                  btn.style.display = productsWithArtwork.includes(pk) ? 'inline-flex' : 'none';
+                });
+              } else {
+                clientSwitcher.style.display = 'none';
+              }
+            }
+          }
+
+          // Bind Client UI Buttons
+          document.querySelectorAll('[data-client-product]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+              switchProductWithTransition(btn.getAttribute('data-client-product'));
+            });
+          });
+
+          const cFront = document.getElementById('client-btn-front');
+          const cBack = document.getElementById('client-btn-back');
+          const cFlip = document.getElementById('client-btn-flip');
+          const cFoldToggle = document.getElementById('client-btn-fold-toggle');
+          const cAuto = document.getElementById('client-btn-autorotate');
+          const cFs = document.getElementById('client-btn-fullscreen');
+
+          if (cFront) cFront.addEventListener('click', () => animateToView('front', 800));
+          if (cBack) cBack.addEventListener('click', () => animateToView('back', 800));
+          if (cFlip) cFlip.addEventListener('click', () => flipPieceSmoothly());
+          if (cFoldToggle) {
+            cFoldToggle.addEventListener('click', () => {
+              if (!isFoldedProduct(state.activeProduct)) return;
+              const prod = state.products[state.activeProduct];
+              // Cycle between Flat (0%), Display (45%), and Closed (95%)
+              if (prod.foldPercent < 20) prod.foldPercent = 45;
+              else if (prod.foldPercent < 75) prod.foldPercent = 95;
+              else prod.foldPercent = 0;
+              updateFoldAnglesInScene();
+            });
+          }
+          if (cAuto) {
             cAuto.classList.toggle('active', state.autoRotate);
-          });
+            cAuto.addEventListener('click', () => {
+              state.autoRotate = !state.autoRotate;
+              cAuto.classList.toggle('active', state.autoRotate);
+            });
+          }
+          if (cFs) cFs.addEventListener('click', toggleFullscreen);
         }
-        if (cFs) cFs.addEventListener('click', toggleFullscreen);
-      }
 
-      /* ==========================================================================
-         13. RESIZE HANDLER & MAIN RENDER LOOP
-         ========================================================================== */
-      function onWindowResize() {
-        const w = window.innerWidth;
-        const h = window.innerHeight;
-        camera.aspect = w / h;
-        camera.updateProjectionMatrix();
-        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        renderer.setSize(w, h);
-      }
-      window.addEventListener('resize', onWindowResize);
+        /* ==========================================================================
+           13. WEBGL CONTEXT LOSS / RESTORE, VISIBILITY PAUSE & RENDER LOOP
+           ========================================================================== */
+        let rafId = null;
+        let isContextLost = false;
+        let accumulatedElapsed = 0;
+        let lastFrameNow = performance.now();
+        let tabHiddenTimestamp = 0;
 
-      const clock = new THREE.Clock();
+        function onWindowResize() {
+          const w = window.innerWidth;
+          const h = window.innerHeight;
+          camera.aspect = w / h;
+          camera.updateProjectionMatrix();
+          renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+          renderer.setSize(w, h);
+          labelsDirty = true;
+        }
+        window.addEventListener('resize', onWindowResize);
 
-      function animate(now) {
-        requestAnimationFrame(animate);
+        function stopRenderLoop() {
+          if (rafId !== null) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+          }
+        }
 
-        const elapsed = clock.getElapsedTime();
+        function startRenderLoop() {
+          if (rafId === null && !document.hidden && !isContextLost) {
+            lastFrameNow = performance.now();
+            rafId = requestAnimationFrame(animate);
+          }
+        }
 
-        // 1. Handle Product Scale Transition
-        if (scaleTransition) {
-          const dt = now - scaleTransition.startTime;
-          if (scaleTransition.phase === 'out') {
-            const p = Math.min(1, dt / scaleTransition.halfDuration);
-            const s = 1 - 0.16 * easeInOutCubic(p);
-            rootStage.scale.setScalar(s);
-            if (p >= 1) {
-              scaleTransition.onMidpoint();
-              scaleTransition.phase = 'in';
-              scaleTransition.startTime = now;
-            }
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) {
+            tabHiddenTimestamp = performance.now();
+            stopRenderLoop();
           } else {
-            const p = Math.min(1, dt / scaleTransition.halfDuration);
-            const s = 0.84 + 0.16 * easeInOutCubic(p);
-            rootStage.scale.setScalar(s);
-            if (p >= 1) {
-              rootStage.scale.setScalar(1);
-              scaleTransition = null;
+            const now = performance.now();
+            if (tabHiddenTimestamp > 0) {
+              const pausedMs = now - tabHiddenTimestamp;
+              tabHiddenTimestamp = 0;
+              if (activeTween) activeTween.startTime += pausedMs;
+              if (scaleTransition) scaleTransition.startTime += pausedMs;
+            }
+            lastFrameNow = now;
+            startRenderLoop();
+          }
+        });
+
+        renderer.domElement.addEventListener(
+          'webglcontextlost',
+          (e) => {
+            e.preventDefault();
+            isContextLost = true;
+            stopRenderLoop();
+            showToast('3D rendering context was lost. Attempting to restore...');
+          },
+          false
+        );
+
+        renderer.domElement.addEventListener(
+          'webglcontextrestored',
+          () => {
+            isContextLost = false;
+            studioEnvMap = createStudioEnvironmentMap();
+            scene.environment = studioEnvMap;
+            frontMaterial.envMap = studioEnvMap;
+            backMaterial.envMap = studioEnvMap;
+            edgeMaterial.envMap = studioEnvMap;
+
+            if (contactShadowMat.map) contactShadowMat.map.dispose();
+            contactShadowMat.map = createContactShadowTexture();
+            contactShadowMat.needsUpdate = true;
+
+            if (floorFadeMat.map) floorFadeMat.map.dispose();
+            floorFadeMat.map = createFloorFadeTexture(state.lightBackground);
+            floorFadeMat.needsUpdate = true;
+
+            Object.keys(state.products).forEach((k) => {
+              ['front', 'back'].forEach((side) => {
+                const slot = state.products[k][side];
+                if (slot && slot.dataUrl) {
+                  loadArtworkFromDataUrl(
+                    k,
+                    side,
+                    slot.dataUrl,
+                    null,
+                    undefined,
+                    { width: slot.width, height: slot.height }
+                  );
+                }
+              });
+            });
+
+            rebuildActiveMesh();
+            labelsDirty = true;
+            startRenderLoop();
+            showToast('3D rendering context restored.');
+          },
+          false
+        );
+
+        function animate(now) {
+          if (document.hidden || isContextLost) {
+            rafId = null;
+            return;
+          }
+          rafId = requestAnimationFrame(animate);
+
+          const dtSeconds = Math.min(0.1, Math.max(0, (now - lastFrameNow) * 0.001));
+          lastFrameNow = now;
+          accumulatedElapsed += dtSeconds;
+
+          // 1. Handle Product Scale Transition
+          if (scaleTransition) {
+            const dt = now - scaleTransition.startTime;
+            if (scaleTransition.phase === 'out') {
+              const p = Math.min(1, dt / scaleTransition.halfDuration);
+              const s = 1 - 0.16 * easeInOutCubic(p);
+              rootStage.scale.setScalar(s);
+              if (p >= 1) {
+                scaleTransition.onMidpoint();
+                scaleTransition.phase = 'in';
+                scaleTransition.startTime = now;
+              }
+            } else {
+              const p = Math.min(1, dt / scaleTransition.halfDuration);
+              const s = 0.84 + 0.16 * easeInOutCubic(p);
+              rootStage.scale.setScalar(s);
+              if (p >= 1) {
+                rootStage.scale.setScalar(1);
+                scaleTransition = null;
+                labelsDirty = true;
+              }
             }
           }
-        }
 
-        // 2. Handle Camera & Piece Rotation Tween
-        if (activeTween) {
-          const progress = Math.min(1, (now - activeTween.startTime) / activeTween.duration);
-          const eased = easeInOutCubic(progress);
+          // 2. Handle Camera & Piece Rotation Tween
+          if (activeTween) {
+            const progress = Math.min(1, (now - activeTween.startTime) / activeTween.duration);
+            const eased = easeInOutCubic(progress);
 
-          camera.position.lerpVectors(activeTween.startCamPos, activeTween.endCamPos, eased);
-          controls.target.lerpVectors(activeTween.startTarget, activeTween.endTarget, eased);
+            camera.position.lerpVectors(activeTween.startCamPos, activeTween.endCamPos, eased);
+            controls.target.lerpVectors(activeTween.startTarget, activeTween.endTarget, eased);
 
-          piecePivot.rotation.x =
-            activeTween.startRotX + (activeTween.endRotX - activeTween.startRotX) * eased;
-          piecePivot.rotation.y =
-            activeTween.startRotY + (activeTween.endRotY - activeTween.startRotY) * eased;
-          piecePivot.rotation.z =
-            activeTween.startRotZ + (activeTween.endRotZ - activeTween.startRotZ) * eased;
+            piecePivot.rotation.x =
+              activeTween.startRotX + (activeTween.endRotX - activeTween.startRotX) * eased;
+            piecePivot.rotation.y =
+              activeTween.startRotY + (activeTween.endRotY - activeTween.startRotY) * eased;
+            piecePivot.rotation.z =
+              activeTween.startRotZ + (activeTween.endRotZ - activeTween.startRotZ) * eased;
 
-          if (progress >= 1) {
-            activeTween = null;
+            if (progress >= 1) {
+              activeTween = null;
+              labelsDirty = true;
+            }
+          } else if (state.autoRotate) {
+            piecePivot.rotation.y += 0.0085;
           }
-        } else if (state.autoRotate) {
-          piecePivot.rotation.y += 0.0085;
+
+          // 3. Subtle Floating Idle Animation (disabled when prefers-reduced-motion is active)
+          const floatOffsetY = prefersReducedMotion ? 0 : Math.sin(accumulatedElapsed * 1.7) * 0.055;
+          const floatTiltZ = prefersReducedMotion ? 0 : Math.cos(accumulatedElapsed * 1.15) * 0.012;
+          floatGroup.position.y = floatOffsetY;
+          floatGroup.rotation.z = floatTiltZ;
+
+          // 4. Sync Floor Mirror Reflection & Contact Shadow Dynamics
+          reflectionPivot.position.copy(piecePivot.position);
+          reflectionPivot.position.y += floatOffsetY;
+          reflectionPivot.rotation.copy(piecePivot.rotation);
+          reflectionPivot.rotation.z += floatTiltZ;
+          reflectionPivot.scale.copy(rootStage.scale);
+
+          // Modulate contact shadow subtly with floating height
+          const shadowHeightFactor = 1 - floatOffsetY * 0.6;
+          contactShadowMat.opacity = (state.lightBackground ? 0.42 : 0.76) * shadowHeightFactor;
+
+          controls.update();
+
+          if (hasSceneViewChanged()) {
+            updateFloating3DLabels();
+            recordSceneViewState();
+          }
+
+          renderer.render(scene, camera);
         }
 
-        // 3. Subtle Floating Idle Animation
-        const floatOffsetY = Math.sin(elapsed * 1.7) * 0.055;
-        const floatTiltZ = Math.cos(elapsed * 1.15) * 0.012;
-        floatGroup.position.y = floatOffsetY;
-        floatGroup.rotation.z = floatTiltZ;
+        // Initialize Editor or Client Mode
+        if (prefersReducedMotion) {
+          state.autoRotate = false;
+        }
 
-        // 4. Sync Floor Mirror Reflection & Contact Shadow Dynamics
-        reflectionPivot.position.copy(piecePivot.position);
-        reflectionPivot.position.y += floatOffsetY;
-        reflectionPivot.rotation.copy(piecePivot.rotation);
-        reflectionPivot.rotation.z += floatTiltZ;
-        reflectionPivot.scale.copy(rootStage.scale);
-
-        // Modulate contact shadow subtly with floating height
-        const shadowHeightFactor = 1 - floatOffsetY * 0.6;
-        contactShadowMat.opacity = (state.lightBackground ? 0.42 : 0.76) * shadowHeightFactor;
-
-        controls.update();
-        updateFloating3DLabels();
-        renderer.render(scene, camera);
-      }
-
-      /* ==========================================================================
-         14. BOOTSTRAP APPLICATION
-         ========================================================================== */
-      window.onload = function () {
         if (window.CLIENT_EXPORT_CONFIG) {
           initClientModeIfConfigured();
         } else {
           bindEditorEvents();
         }
 
+        syncAutoRotateUI();
         syncProductUI();
         rebuildActiveMesh();
         animateToView('cover', 900);
-        requestAnimationFrame(animate);
-      };
+        startRenderLoop();
+      }
+
+      /* ==========================================================================
+         14. BOOTSTRAP APPLICATION ON WINDOW LOAD
+         ========================================================================== */
+      window.addEventListener('load', async function () {
+        const loaded = await ensureThreeLoaded();
+        if (!loaded) {
+          showFatalError('Could not load the 3D viewer. Please check your internet connection and reload.');
+          return;
+        }
+        startViewerApplication();
+      });
     })();
   </script>
 </body>
